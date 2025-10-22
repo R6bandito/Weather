@@ -8,9 +8,16 @@ SemaphoreHandle_t vMutex_Debug;
 #if !defined(__REALEASE__)
 
 
-static void Debug_LED_State_INIT_Failed( DebugLEDEnvMode_t Mode );
 
+#if defined(__DEBUG_LEVEL_2__)
+  static void Debug_LED_State_INIT_Failed( DebugLEDEnvMode_t Mode );
 
+  static void Debug_LED_State_HARD_FAULT_Failed( DebugLEDEnvMode_t Mode );
+
+  static void Debug_LED_State_SOURCE_GET_Failed( DebugLEDEnvMode_t Mode );
+
+  void Debug_LED_Dis( DebugLedState_t State, DebugLEDEnvMode_t Mode );
+#endif // __DEBUG_LEVEL_2__
 
 
 
@@ -82,7 +89,7 @@ static void Debug_LED_State_INIT_Failed( DebugLEDEnvMode_t Mode );
     {
       /* Error Handler. */
       #if defined(__DEBUG_LEVEL_2__)
-        Debug_LED_State_INIT_Failed( COMN_VER );
+        Debug_LED_Dis(DEBUG_LED_INIT_FAILED, COMN_VER);
       #endif // 
 
       return ERROR;
@@ -94,11 +101,11 @@ static void Debug_LED_State_INIT_Failed( DebugLEDEnvMode_t Mode );
 
     if ( vMutex_Debug == NULL )
     {
-      #if defined(__DEBUG_LEVEL_1__)
+      printf("Get Mutex Failed in bsp_usart_debug.c!\n");
 
-        printf("Get Mutex Failed in bsp_usart_debug.c!\n");
-
-      #endif // __DEBUG_LEVEL_1__
+      #if defined(__DEBUG_LEVEL_2__)
+        Debug_LED_Dis(DEBUG_SOURCE_GET_FAILED, COMN_VER);
+      #endif // __DEBUG_LEVEL_2__
 
       return ERROR;
     }
@@ -146,6 +153,7 @@ static void Debug_LED_State_INIT_Failed( DebugLEDEnvMode_t Mode );
 
 
 
+
   static inline void Debug_LED_Off( void )
   {
     uint32_t offset;
@@ -164,6 +172,16 @@ static void Debug_LED_State_INIT_Failed( DebugLEDEnvMode_t Mode );
 
 
 
+  /**
+   * @brief  LED 调式状态指示:  初始化失败 (三短一长).
+   * @param  Mode:  指示调用位置的工作环境. 
+   *        可以为以下参数: 
+   *              COMN_VER  裸机环境(RTOS未启动).
+   *              RTOS_VER  实时操作系统环境下.
+   *                
+   * @note  NULL.
+   *         
+ */
   static void Debug_LED_State_INIT_Failed( DebugLEDEnvMode_t Mode )
   {
     if ( Mode == COMN_VER )
@@ -217,10 +235,149 @@ static void Debug_LED_State_INIT_Failed( DebugLEDEnvMode_t Mode );
   }
 
 
-  void Debug_LED_State_SOURCE_GET_Failed( void )
-  {
 
+  /**
+   * @brief  LED 调式状态指示:  资源获取失败(互斥信号量请求失败,内存分配失败等) (四短).
+   * @param  Mode:  指示调用位置的工作环境. 
+   *        可以为以下参数: 
+   *              COMN_VER  裸机环境(RTOS未启动).
+   *              RTOS_VER  实时操作系统环境下.
+   *                
+   * @note  NULL.
+   *         
+ */
+  static void Debug_LED_State_SOURCE_GET_Failed( DebugLEDEnvMode_t Mode )
+  { 
+    if ( Mode == COMN_VER )
+    {
+      for( ; ; )
+      {
+        for(uint8_t j = 0; j < 4; j++)
+        {
+          Debug_LED_On();
+  
+          HAL_Delay(DEBUG_LED_STATE_SHORT);
+  
+          Debug_LED_Off();
+  
+          HAL_Delay(DEBUG_LED_STATE_SHORT);
+        }
+  
+        HAL_Delay(DEBUG_LED_STATE_CYCLE);
+      }
+    }
+
+    if ( Mode == RTOS_VER )
+    {
+      for( ; ; )
+      {
+        for(uint8_t j = 0; j < 4; j++)
+        {
+          Debug_LED_On();
+  
+          vTaskDelay(pdMS_TO_TICKS(DEBUG_LED_STATE_SHORT));
+  
+          Debug_LED_Off();
+  
+          vTaskDelay(pdMS_TO_TICKS(DEBUG_LED_STATE_SHORT));
+        }
+  
+        vTaskDelay(pdMS_TO_TICKS(DEBUG_LED_STATE_CYCLE));
+      }
+    }
   }
+
+
+  /**
+   * @brief  LED 调式状态指示:  硬件故障 (一长 三短).
+   * @param  Mode:  指示调用位置的工作环境. 
+   *        可以为以下参数: 
+   *              COMN_VER  裸机环境(RTOS未启动).
+   *              RTOS_VER  实时操作系统环境下.
+   *                
+   * @note  NULL.
+   *         
+ */
+  static void Debug_LED_State_HARD_FAULT_Failed( DebugLEDEnvMode_t Mode )
+  {
+    if ( Mode == COMN_VER )
+    {
+      for( ; ; )
+      {
+        Debug_LED_On();
+
+        HAL_Delay(DEBUG_LED_STATE_LONG);
+
+        Debug_LED_Off();
+
+        HAL_Delay(DEBUG_LED_STATE_LONG);
+
+        for(uint8_t j = 0; j < 3; j++)
+        {
+          Debug_LED_On();
+
+          HAL_Delay(DEBUG_LED_STATE_SHORT);
+
+          Debug_LED_Off();
+
+          HAL_Delay(DEBUG_LED_STATE_SHORT);
+        }
+
+        HAL_Delay(DEBUG_LED_STATE_CYCLE);
+      }
+    }
+
+    if (Mode == RTOS_VER )
+    {
+      for( ; ; )
+      {
+        Debug_LED_On();
+
+        vTaskDelay(pdMS_TO_TICKS(DEBUG_LED_STATE_LONG));
+
+        Debug_LED_Off();
+
+        vTaskDelay(pdMS_TO_TICKS(DEBUG_LED_STATE_LONG));
+
+        for(uint8_t j = 0; j < 3; j++)
+        {
+          Debug_LED_On();
+
+          vTaskDelay(pdMS_TO_TICKS(DEBUG_LED_STATE_SHORT));
+
+          Debug_LED_Off();
+
+          vTaskDelay(pdMS_TO_TICKS(DEBUG_LED_STATE_SHORT));
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(DEBUG_LED_STATE_CYCLE));
+      }
+    }
+  }
+
+
+
+  void Debug_LED_Dis( DebugLedState_t State, DebugLEDEnvMode_t Mode )
+  {
+    switch ( State )
+    {
+    case DEBUG_LED_INIT_FAILED: 
+      Debug_LED_State_INIT_Failed( Mode );
+      break;
+
+    case DEBUG_SOURCE_GET_FAILED:
+      Debug_LED_State_SOURCE_GET_Failed( Mode );
+      break;
+    
+    case DEBUG_HARD_FAULT:
+      Debug_LED_State_HARD_FAULT_Failed( Mode );
+      break;
+    
+    default:
+      break;
+    }
+  }
+
 
 #endif // __DEBUG_LEVEL_2__
 

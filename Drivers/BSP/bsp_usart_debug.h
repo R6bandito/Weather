@@ -44,7 +44,9 @@ typedef enum {
 
   DEBUG_LED_INIT_FAILED,
 
-  DEBUG_SOURCE_GET_FAILED
+  DEBUG_SOURCE_GET_FAILED,
+
+  DEBUG_HARD_FAULT
 
 } DebugLedState_t;
 
@@ -71,6 +73,8 @@ typedef enum {
   #if defined(__DEBUG_LEVEL_2__)
 
     void Debug_Led_Init( void );
+
+    void Debug_LED_Dis( DebugLedState_t State, DebugLEDEnvMode_t Mode );
 
   #endif // __DEBUG_LEVEL_2__
 
