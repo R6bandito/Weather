@@ -1,0 +1,57 @@
+# Keil IDE 相关文件
+*.uvgui.*
+*.uvopt
+*.uvproj.*.bak
+*.uvguix.*
+*.uvoptx.*
+Build/
+Listings/
+Objects/
+.vscode/
+*.lst
+*.map
+*.dep
+*.crf
+*.d
+*.axf
+*.lnp
+*.sct
+*.tra
+*.iex
+*.htm
+
+# 编译输出文件
+*.o
+*.su
+*.bin
+*.hex
+*.elf
+
+# Keil临时文件
+*.plg
+*.bat
+*.ini
+__embeddedcpp_*
+
+# 调试文件
+*.cdb
+*.dbg
+*.ini
+
+# 用户特定设置（不同开发者可能有不同配置）
+*.uvguix.*
+*.uvoptx
+
+# 保留项目文件本身
+!*.uvprojx
+!*.uvmpw
+
+# 系统文件
+Thumbs.db
+.DS_Store
+*.swp
+*~
+
+# 本地配置
+.local
+.env
