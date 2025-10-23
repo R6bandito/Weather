@@ -10,6 +10,10 @@
               /* #define __REALEASE__ */
 /*  *********************************************    */
 
+#if !defined( __DEBUG_LEVEL_1__) && !defined(__DEBUG_LEVEL_2__) && !defined(__REALEASE__) 
+#warning "No debug level defined! And Not in REALEASE Status."
+#endif 
+
 #if !defined(__REALEASE__)
 
 #include "stm32f4xx_hal.h"
@@ -42,11 +46,13 @@
 /*  调试LED状态展示 */
 typedef enum {
 
-  DEBUG_LED_INIT_FAILED,
+  DEBUG_INIT_FAILED,
 
   DEBUG_SOURCE_GET_FAILED,
 
-  DEBUG_HARD_FAULT
+  DEBUG_HARD_FAULT,
+
+  DEBUG_WRONG_PARAM
 
 } DebugLedState_t;
 

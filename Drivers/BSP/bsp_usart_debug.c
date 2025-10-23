@@ -17,6 +17,8 @@ SemaphoreHandle_t vMutex_Debug;
   static void Debug_LED_State_SOURCE_GET_Failed( DebugLEDEnvMode_t Mode );
 
   void Debug_LED_Dis( DebugLedState_t State, DebugLEDEnvMode_t Mode );
+
+  static void Debug_LED_State_WRONG_PARAM_Failed( DebugLEDEnvMode_t Mode );
 #endif // __DEBUG_LEVEL_2__
 
 
@@ -89,7 +91,7 @@ SemaphoreHandle_t vMutex_Debug;
     {
       /* Error Handler. */
       #if defined(__DEBUG_LEVEL_2__)
-        Debug_LED_Dis(DEBUG_LED_INIT_FAILED, COMN_VER);
+        Debug_LED_Dis(DEBUG_INIT_FAILED, COMN_VER);
       #endif // 
 
       return ERROR;
@@ -357,11 +359,86 @@ SemaphoreHandle_t vMutex_Debug;
 
 
 
+  /**
+   * @brief  LED 调式状态指示:  函数传参不合法 (两长 两短).
+   * @param  Mode:  指示调用位置的工作环境. 
+   *        可以为以下参数: 
+   *              COMN_VER  裸机环境(RTOS未启动).
+   *              RTOS_VER  实时操作系统环境下.
+   *                
+   * @note  NULL.
+   *         
+ */
+  static void Debug_LED_State_WRONG_PARAM_Failed( DebugLEDEnvMode_t Mode )
+  {
+    if ( Mode == COMN_VER )
+    {
+      for( ; ; )
+      {
+        for(uint8_t j = 0; j < 2; j++)
+        {
+          Debug_LED_On();
+
+          HAL_Delay(DEBUG_LED_STATE_LONG);
+  
+          Debug_LED_Off();
+
+          HAL_Delay(DEBUG_LED_STATE_LONG);
+        }
+
+        for(uint8_t j = 0; j < 2; j++)
+        {
+          Debug_LED_On();
+
+          HAL_Delay(DEBUG_LED_STATE_SHORT);
+
+          Debug_LED_Off();
+
+          HAL_Delay(DEBUG_LED_STATE_SHORT);
+        }
+
+        HAL_Delay(DEBUG_LED_STATE_CYCLE);
+      }
+    }
+
+    if (Mode == RTOS_VER )
+    {
+      for( ; ; )
+      {
+        for(uint8_t j = 0; j < 2; j++)
+        {
+          Debug_LED_On();
+
+          vTaskDelay(pdMS_TO_TICKS(DEBUG_LED_STATE_LONG));
+  
+          Debug_LED_Off();
+
+          vTaskDelay(pdMS_TO_TICKS(DEBUG_LED_STATE_LONG));
+        }
+
+        for(uint8_t j = 0; j < 2; j++)
+        {
+          Debug_LED_On();
+
+          vTaskDelay(pdMS_TO_TICKS(DEBUG_LED_STATE_SHORT));
+
+          Debug_LED_Off();
+
+          vTaskDelay(pdMS_TO_TICKS(DEBUG_LED_STATE_SHORT));
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(DEBUG_LED_STATE_CYCLE));
+      }
+    }
+  }
+
+
+
   void Debug_LED_Dis( DebugLedState_t State, DebugLEDEnvMode_t Mode )
   {
     switch ( State )
     {
-    case DEBUG_LED_INIT_FAILED: 
+    case DEBUG_INIT_FAILED: 
       Debug_LED_State_INIT_Failed( Mode );
       break;
 
@@ -371,6 +448,10 @@ SemaphoreHandle_t vMutex_Debug;
     
     case DEBUG_HARD_FAULT:
       Debug_LED_State_HARD_FAULT_Failed( Mode );
+      break;
+
+    case DEBUG_WRONG_PARAM:
+      Debug_LED_State_WRONG_PARAM_Failed( Mode );
       break;
     
     default:

@@ -8,6 +8,8 @@
 
 /* #define TIM_HAVE_MORE */
 
+/* #define USART_HAVE_MORE */
+
 
 #ifdef __cplusplus
   extern "C" {
@@ -16,6 +18,8 @@
 void GPIO_Clk_Enable( GPIO_TypeDef * __gpio );
 
 void TIM_Clk_Enable( TIM_TypeDef *__hptim );
+
+void USART_Clk_Enable( USART_TypeDef *__usart );
 
 #ifdef __cplusplus
   }

@@ -1,6 +1,7 @@
 #include "Perp_clkEn.h"
 
 
+
 /**
  * @brief  使能指定GPIO端口的时钟
  * @param  __gpio: 指向GPIO端口的指针，例如 GPIOA, GPIOB, ...
@@ -21,15 +22,6 @@ void GPIO_Clk_Enable( GPIO_TypeDef * __gpio )
       /* Led Status. */
 
     #endif // __DEBUG_LEVEL_2__
-
-    #if defined(__REALEASE__)
-      /* Do Nothing. */
-
-    #endif // __REALEASE__
-
-    #if !defined( __DEBUG_LEVEL_1__) && !defined(__DEBUG_LEVEL_2__) && !defined(__REALEASE__) 
-      #warning "No debug level defined! And Not in REALEASE Status."
-    #endif 
 
     return;
   }
@@ -90,23 +82,13 @@ void TIM_Clk_Enable( TIM_TypeDef *__hptim )
   {
     #if defined(__DEBUG_LEVEL_1__)
       /* Send Error Info. */
-      printf("Wrong param in TIM_Clk_Enable\n");
-
+      printf("Wrong param of TIM_Clk_Enable in the Perp_clkEn.c\n");
     #endif //__DEBUG_LEVEL_1__
-
+      Debug_LED_Dis(DEBUG_WRONG_PARAM, COMN_VER);
     #if defined(__DEBUG_LEVEL_2__)
       /* Led Status. */
 
     #endif // __DEBUG_LEVEL_2__
-
-    #if defined(__REALEASE__)
-      /* Do Nothing. */
-
-    #endif // __REALEASE__
-
-    #if !defined( __DEBUG_LEVEL_1__) && !defined(__DEBUG_LEVEL_2__) && !defined(__REALEASE__) 
-      #warning "No debug level defined! And Not in REALEASE Status."
-    #endif 
     
     return;
   }
@@ -165,5 +147,64 @@ void TIM_Clk_Enable( TIM_TypeDef *__hptim )
     }
 
   #endif // TIM_HAVE_MORE
+}
+
+
+
+
+/**
+ * @brief  使能指定USART的外设时钟。
+ * @param  __usart: 指向USART_TypeDef类型的指针，指定要使能的USART实例。
+ *                可以是USART1, USART2, USART3等。
+ * @note  
+ *         
+ */
+void USART_Clk_Enable( USART_TypeDef *__usart )
+{
+  if ( __usart == NULL )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("Wrong param of USART_Clk_Enable in the Perp_clkEn.c\n");
+    #endif // __DEBUG_LEVEL_1__
+
+    #if defined(__DEBUG_LEVEL_2__)
+      Debug_LED_Dis(DEBUG_WRONG_PARAM, COMN_VER);
+    #endif // __DEBUG_LEVEL_2__
+
+    return;
+  }
+
+  if ( __usart == USART1 )
+  {
+    RCC -> APB2ENR |= RCC_APB2ENR_USART1EN;
+
+    __DSB();  return;
+  }
+
+  if ( __usart == USART2 )
+  {
+    RCC -> APB1ENR |= RCC_APB1ENR_USART2EN;
+
+    __DSB();  return;
+  }
+
+  if ( __usart == USART3 )
+  {
+    RCC ->APB1ENR |= RCC_APB1ENR_USART3EN;
+
+    __DSB();  return;
+  }
+
+  #if defined(USART_HAVE_MORE)
+  /* 
+    如有更多的USART需要支持，在启用该宏后自行添加。 
+    If have more USART that need to be suppport, adding these new USART to following content after 
+    define this flag:   USART_HAVE_MORE
+  */
+    if ( __usart == USART4 )
+    {
+
+    }
+  #endif // USART_HAVE_MORE
 }
 

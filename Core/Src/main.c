@@ -9,6 +9,10 @@ int main( void )
 
 	Debug_USART_Init();
 
+	vEspInit_TaskCreate();
+
+	vTaskStartScheduler();
+
 	while(1)
 	{
 		printf("Heelo.\n");

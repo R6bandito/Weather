@@ -929,6 +929,16 @@
               <FileType>5</FileType>
               <FilePath>.\Hardware\task_Exam.h</FilePath>
             </File>
+            <File>
+              <FileName>esp8266_driver.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\Hardware\esp8266_driver.c</FilePath>
+            </File>
+            <File>
+              <FileName>esp8266_driver.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\Hardware\esp8266_driver.h</FilePath>
+            </File>
           </Files>
         </Group>
       </Groups>
