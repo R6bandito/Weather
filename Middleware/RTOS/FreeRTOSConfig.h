@@ -26,6 +26,7 @@
 #define configUSE_MUTEXES           1
 #define configUSE_MPU_WRAPPERS      1
 #define configCHECK_FOR_STACK_OVERFLOW 0
+#define configUSE_RECURSIVE_MUTEXES 1
 
 #define INCLUDE_vTaskPrioritySet		1
 #define INCLUDE_uxTaskPriorityGet		1
