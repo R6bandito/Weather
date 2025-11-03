@@ -3,6 +3,8 @@
 
 /* Global Ver.*/
 /* ********************************************** */
+ESP8266_HandleTypeDef hesp8266 = { 0 };
+
 UART_HandleTypeDef esp8266_huart;
 
 SemaphoreHandle_t xMutexEsp;
@@ -33,16 +35,43 @@ TaskHandle_t xCurrentSendTaskHandle = NULL;
 
 
 /* ********************************************** */
-static void UART4_Init( void );
+static bool UART4_Init( void );
 static void Wifi_Connect( void );
 static uint32_t usart_timeout_Calculate( uint16_t data_len );
+static void esp8266Handle_Initial( ESP8266_HandleTypeDef *hpesp8266 );
 /* ********************************************** */
 
 
 
 void vtask8266_Init( void *parameter )
 {
-  UART4_Init();
+  esp8266Handle_Initial( &hesp8266 );
+
+  EspInitState_t currentState = INIT_STATE_RESET;
+
+  #if defined(__DEBUG_LEVEL_1__)
+    printf("Esp8266 Init Start.\n");
+  #endif // __DEBUG_LEVEL_1__
+
+  if ( !UART4_Init() )
+	{
+		#if defined(__DEBUG_LEVEL_1__)
+			printf("UART Init Failed!\n");
+		#endif // __DEBUG_LEVEL_1__
+
+		#if defined(__DEBUG_LEVEL_2__)
+			Debug_LED_Dis(DEBUG_INIT_FAILED, RTOS_VER);
+		#endif // __DEBUG_LEVEL_2__
+
+    /* 复位 待写 */
+	}
+
+  while( (currentState != INIT_STATE_ERROR) && (currentState != INIT_STATE_COMPLETE) )
+  {
+ 
+  }
+
+  /*    TEST     */
 
   xMutexEsp = xSemaphoreCreateRecursiveMutex();
   if ( xMutexEsp == NULL )
@@ -72,6 +101,7 @@ void vtask8266_Init( void *parameter )
       rx_flag = NO_DATA;
     }
   }
+    /*    TEST     */
 
 }
 
@@ -84,9 +114,48 @@ static void*  memmem(
                       const void* need_str,    uint16_t need_str_len                      
                     )
 {
-  
+  if ( haystack == NULL || need_str == NULL )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("Wrong Param of memmem in esp8266_driver.c\n");
+    #endif // __DEBUG_LEVEL_1__
 
+    #if defined(__DEBUG_LEVEL_2__)
+      Debug_LED_Dis(DEBUG_WRONG_PARAM, RTOS_VER);
+    #endif // __DEBUG_LEVEL_2__
 
+    return NULL;
+  }
+
+  // 空字符串，直接返回haystack.
+  if ( need_str_len == 0 )
+  {
+    return (void *)haystack;
+  }
+
+  const uint8_t *needle = (const uint8_t *)need_str;
+
+  for(uint16_t j = 0; j <= stack_len - need_str_len; j++)
+  {
+    uint16_t i;
+
+    for(i = 0; i < need_str_len; i++)
+    {
+      if ( haystack[j + i] != needle[i] )
+      {
+        break;
+      }
+    }
+
+    if ( i == need_str_len )
+    {
+      // 找到子字符串.返回匹配起始位置的地址.
+      return (void *)&haystack[j];
+    }
+  }
+
+  // 没找到. 返回空指针.
+  return NULL;
 }
 
 
@@ -185,7 +254,7 @@ exit:
 
 
 
-EspMode_t esp8266_ConnectModeChange( EspMode_t Mode )
+EspWifiMode_t esp8266_ConnectModeChange( EspWifiMode_t Mode )
 {
   if  ( 
         Mode != STATION && 
@@ -201,12 +270,12 @@ EspMode_t esp8266_ConnectModeChange( EspMode_t Mode )
       Debug_LED_Dis(DEBUG_WRONG_PARAM, RTOS_VER);
     #endif // __DEBUG_LEVEL_2__
 
-    return ESP_ERROR;
+    return ESP_WIFI_ERROR;
   }
 
   BaseType_t err = xSemaphoreTakeRecursive(xMutexEsp, 500);
   if ( err != pdPASS )
-    return ESP_ERROR;
+    return ESP_WIFI_ERROR;
 
   char atCommand[32];
 
@@ -215,7 +284,7 @@ EspMode_t esp8266_ConnectModeChange( EspMode_t Mode )
   {
     xSemaphoreGiveRecursive(xMutexEsp);
 
-    return ESP_ERROR;
+    return ESP_WIFI_ERROR;
   }
 
   // 输出被截断，缓冲区太小
@@ -223,7 +292,7 @@ EspMode_t esp8266_ConnectModeChange( EspMode_t Mode )
   {
     xSemaphoreGiveRecursive(xMutexEsp);
 
-    return ESP_ERROR;
+    return ESP_WIFI_ERROR;
   }
 
   esp8266_SendAT("%s", atCommand);
@@ -235,7 +304,7 @@ EspMode_t esp8266_ConnectModeChange( EspMode_t Mode )
 
 
 
-bool esp8266_WaitResponse( const char* expected, uint32_t timeout_ms )
+void *esp8266_WaitResponse( const char* expected, uint32_t timeout_ms )
 {
   if ( expected == NULL || strlen(expected) == 0 )
   {
@@ -250,13 +319,15 @@ bool esp8266_WaitResponse( const char* expected, uint32_t timeout_ms )
     return false;
   }
 
+  uint16_t hayStack_len = strlen(expected);
+
   const uint8_t *rx_data;
 
   uint16_t data_len = 0;
 
   TickType_t start_time = xTaskGetTickCount();
 
-  while( (xTaskGetTickCount - start_time) < timeout_ms )
+  while( (xTaskGetTickCount() - start_time) < timeout_ms )
   {
     if ( rx_flag == RECV_DATA )
     {
@@ -266,16 +337,32 @@ bool esp8266_WaitResponse( const char* expected, uint32_t timeout_ms )
 
       rx_data = esp8266_RecvBuffer;
 
-      /*data_len = ....*/
+      data_len = recvData_len;
 
-      
+      uint8_t *pSearch = memmem(rx_data, data_len, expected, hayStack_len);
+
+      if ( pSearch != NULL )
+      {
+        xSemaphoreGiveRecursive(xMutexEsp);
+
+        return (void *)pSearch;
+      }
     }
+
+    vTaskDelay(pdMS_TO_TICKS(2));
   }
+
+  // 等待响应超时.
+  #if defined(__DEBUG_LEVEL_1__)
+    printf("WaitResponse Timeout!\n");
+  #endif // __DEBUG_LEVEL_1__
+
+  return NULL;
 }
 
 
 
-static void UART4_Init( void )
+static bool UART4_Init( void )
 {
   __HAL_RCC_UART4_CLK_ENABLE();
 
@@ -299,7 +386,7 @@ static void UART4_Init( void )
       Debug_LED_Dis(DEBUG_INIT_FAILED, RTOS_VER);
     #endif //__DEBUG_LEVEL_2__
 
-    return;
+    return false;
   }
 
   
@@ -327,7 +414,7 @@ static void UART4_Init( void )
       Debug_LED_Dis(DEBUG_INIT_FAILED, RTOS_VER);
     #endif //__DEBUG_LEVEL_2__
 
-    return;
+    return false;
   }
 
   hdma_tx.Instance = DMA1_Stream4;
@@ -354,7 +441,7 @@ static void UART4_Init( void )
       Debug_LED_Dis(DEBUG_INIT_FAILED, RTOS_VER);
     #endif //__DEBUG_LEVEL_2__
 
-    return;    
+    return false;    
   }
 
   __HAL_LINKDMA(&esp8266_huart, hdmarx, hdma_rx);
@@ -367,7 +454,7 @@ static void UART4_Init( void )
       printf("Failed to start ReceiveToIdle DMA!\n");
     #endif
 
-    return;
+    return false;
   }
 
   __HAL_UART_ENABLE_IT(&esp8266_huart, UART_IT_IDLE); // 显示使能IDLE中断.
@@ -382,6 +469,8 @@ static void UART4_Init( void )
   HAL_NVIC_EnableIRQ(DMA1_Stream4_IRQn);
 
   printf("ESP8266 USART Init OK\n");
+
+  return true;
 }
 
 
@@ -428,5 +517,24 @@ static uint32_t usart_timeout_Calculate( uint16_t data_len )
 
    // 最小和最大超时限制
    return (timeout < 100) ? 100 : (timeout > 5000) ? 5000 : timeout;
+}
 
+
+static void esp8266Handle_Initial( ESP8266_HandleTypeDef *hpesp8266 )
+{
+  if ( hpesp8266 == NULL )
+  {
+    return;
+  }
+
+  hpesp8266->RetryCount = 0;
+  hpesp8266->MaxRetry = 3;
+  hpesp8266->Status = ESP_STATUS_DISCONNECTED;
+  hpesp8266->CurrentMode = ESP_WIFI_ERROR;
+
+  strncpy(hpesp8266->WifiSSID, WIFI_SSID, sizeof(hpesp8266->WifiSSID) - 1);
+  hpesp8266->WifiSSID[sizeof(hpesp8266->WifiSSID) - 1] = '\0';
+
+  strncpy(hpesp8266->WifiPassword, WIFI_PASSWORD, sizeof(hpesp8266->WifiPassword) - 1);
+  hpesp8266->WifiPassword[sizeof(hpesp8266->WifiPassword) - 1] = '\0';
 }
