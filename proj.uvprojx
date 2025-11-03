@@ -314,7 +314,7 @@
           </ArmAdsMisc>
           <Cads>
             <interw>1</interw>
-            <Optim>1</Optim>
+            <Optim>2</Optim>
             <oTime>0</oTime>
             <SplitLS>0</SplitLS>
             <OneElfS>1</OneElfS>
@@ -338,7 +338,7 @@
             <v6Rtti>0</v6Rtti>
             <VariousControls>
               <MiscControls></MiscControls>
-              <Define>USE_HAL_DRIVER,STM32F407xx</Define>
+              <Define>USE_HAL_DRIVER,STM32F407xx,__USE_ATOMIC</Define>
               <Undefine></Undefine>
               <IncludePath>.\Drivers\CMSIS\Device\ST\STM32F4\Inc;.\Drivers\CMSIS\Include;.\Drivers\CMSIS\Device\ST\STM32F4;.\Drivers\HAL\Inc;.\Core\Inc;.\Drivers\HAL\Inc\Legacy;.\Drivers\BSP;.\Middleware\RTOS\Core\Inc;.\Middleware\RTOS\Portable;.\Middleware\RTOS;.\Hardware</IncludePath>
             </VariousControls>
@@ -408,6 +408,11 @@
               <FileName>mpu_armv7.h</FileName>
               <FileType>5</FileType>
               <FilePath>.\Drivers\CMSIS\Include\mpu_armv7.h</FilePath>
+            </File>
+            <File>
+              <FileName>cmsis_armclang.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\Drivers\CMSIS\Include\cmsis_armclang.h</FilePath>
             </File>
           </Files>
         </Group>

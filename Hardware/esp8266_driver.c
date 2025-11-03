@@ -1,25 +1,48 @@
 #include "esp8266_driver.h"
 
-USART_HandleTypeDef esp8266_husart;
+
+/* Global Ver.*/
+/* ********************************************** */
+UART_HandleTypeDef esp8266_huart;
 
 SemaphoreHandle_t xMutexEsp;
 
+DMA_HandleTypeDef  hdma_rx;
+
+DMA_HandleTypeDef  hdma_tx;
+
 uint8_t rx_flag = NO_DATA;
 
-uint8_t esp8266_RecvBuffer[RECV_DATA_BUFFER] = { 0 };
+uint8_t esp8266_RecvBuffer[RECV_DATA_BUFFER] = { 0 }; 
+
+uint8_t esp8266_TxBuffer[Tx_DATA_BUFFER] = { 0 };
+
+uint8_t recv_temp[RECV_DATA_BUFFER] = { 0 };
+
+volatile uint16_t recvData_len;
+/* ********************************************** */
+
+
+/* ********************************************** */
+TaskHandle_t xCurrentSendTaskHandle = NULL;
 
 
 
 /* ********************************************** */
-static void USART2_Init( void );
+
+
+
+/* ********************************************** */
+static void UART4_Init( void );
 static void Wifi_Connect( void );
+static uint32_t usart_timeout_Calculate( uint16_t data_len );
 /* ********************************************** */
 
 
 
 void vtask8266_Init( void *parameter )
 {
-  USART2_Init();
+  UART4_Init();
 
   xMutexEsp = xSemaphoreCreateRecursiveMutex();
   if ( xMutexEsp == NULL )
@@ -38,13 +61,16 @@ void vtask8266_Init( void *parameter )
   {
     printf("vtask8266 RUNNING!\n");
 
-    esp8266_ConnectModeChange(STATION_SOFTAP);
+    esp8266_SendAT("AT+CWMODE=3");
 
     vTaskDelay(pdMS_TO_TICKS(1000));
 
-    esp8266_SendAT("AT");
+    if ( rx_flag == RECV_DATA )
+    {
+      printf("Recv Data Len: %d\n", recvData_len);
 
-    vTaskDelay(pdMS_TO_TICKS(1000));
+      rx_flag = NO_DATA;
+    }
   }
 
 }
@@ -81,35 +107,37 @@ bool esp8266_SendAT( const char* format, ... )
     return false;
   }
 
-  char buffer[COMMAND_BUFFER];
-
   va_list args;
 
   va_start( args, format );
 
-  int len = vsnprintf( buffer, sizeof(buffer), format, args );
+  memset(esp8266_TxBuffer, 0, Tx_DATA_BUFFER);
+
+  int len = vsnprintf( esp8266_TxBuffer, Tx_DATA_BUFFER, format, args );
+
+  va_end(args);
 
   // (int)(sizeof(buffer) - 3) 预留出 \r\n\0的位置.
-  if ( len < 0 || len >= (int)(sizeof(buffer) - 3))
+  if ( len < 0 || len >= Tx_DATA_BUFFER - 3)
   {
     #if defined(__DEBUG_LEVEL_1__)
       printf("AT Command Too Long or Format Error!\n");
     #endif
 
-    xSemaphoreGiveRecursive(xMutexEsp);
-
-    return false;
+    goto exit;
   }
 
   if ( len > 0 )
   {
-    buffer[len] = '\r';
-    buffer[len + 1] = '\n';
-    buffer[len + 2] = '\0'; 
+    esp8266_TxBuffer[len] = '\r';
+    esp8266_TxBuffer[len + 1] = '\n';
+    esp8266_TxBuffer[len + 2] = '\0'; 
     len += 2;   // 发送长度增加 2
 
+    xCurrentSendTaskHandle = xTaskGetCurrentTaskHandle();
+
     HAL_StatusTypeDef status = 
-                HAL_USART_Transmit(&esp8266_husart, (uint8_t *)buffer, len, 500);
+                HAL_UART_Transmit_DMA(&esp8266_huart, esp8266_TxBuffer, len);
 
     if ( status != HAL_OK )
     {
@@ -117,18 +145,41 @@ bool esp8266_SendAT( const char* format, ... )
         printf("AT Send Error!\n");
       #endif // __DEBUG_LEVEL_1__
 
+      goto exit;
+    }
+
+    if ( ulTaskNotifyTake(pdTRUE, usart_timeout_Calculate(len)) > 0 )
+    {
+      // 成功接收到通知.
       xSemaphoreGiveRecursive(xMutexEsp);
 
-      return false;
+      xCurrentSendTaskHandle = NULL;
+
+      return true;
     }
     
-    xSemaphoreGiveRecursive(xMutexEsp);
+    // 发送超时.
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("AT Command Send Timeout.\n");
+    #endif // __DEBUG_LEVEL_1__
 
-    return true;
+    __disable_irq();
+    HAL_UART_StateTypeDef currentState = esp8266_huart.gState;
+    __enable_irq();
+
+    // 取消可能还在进行的DMA传输.
+    if ( currentState == HAL_UART_STATE_BUSY_TX )
+    {
+      HAL_UART_AbortTransmit(&esp8266_huart);
+    }
+
+    goto exit;
   }
 
-  xSemaphoreGiveRecursive(xMutexEsp);
 
+exit:
+  xCurrentSendTaskHandle = NULL;
+  xSemaphoreGiveRecursive(xMutexEsp);
   return false;
 }
 
@@ -224,30 +275,115 @@ bool esp8266_WaitResponse( const char* expected, uint32_t timeout_ms )
 
 
 
-static void USART2_Init( void )
+static void UART4_Init( void )
 {
-  USART_Clk_Enable(USART2);
+  __HAL_RCC_UART4_CLK_ENABLE();
 
-  esp8266_husart.Instance = USART2;
-  esp8266_husart.Init.BaudRate = ESP_USART_BAUDRATE;
-  esp8266_husart.Init.Mode = ESP_USART_MODE;
-  esp8266_husart.Init.Parity = ESP_USART_PARITY;
-  esp8266_husart.Init.StopBits = ESP_USART_STOPBITS;
-  esp8266_husart.Init.WordLength = ESP_USART_WORDLENGTH;
+  __HAL_RCC_DMA1_CLK_ENABLE();
 
-  if ( HAL_USART_Init(&esp8266_husart) != HAL_OK )
+  esp8266_huart.Instance = ESP_UART;
+  esp8266_huart.Init.BaudRate = ESP_UART_BAUDRATE;
+  esp8266_huart.Init.Mode = ESP_UART_MODE;
+  esp8266_huart.Init.Parity = ESP_UART_PARITY;
+  esp8266_huart.Init.StopBits = ESP_UART_STOPBITS;
+  esp8266_huart.Init.WordLength = ESP_UART_WORDLENGTH;
+  esp8266_huart.Init.HwFlowCtl = ESP_UART_HwFLOW;
+
+  if ( HAL_UART_Init(&esp8266_huart) != HAL_OK )
   {
     #if defined(__DEBUG_LEVEL_1__)
-      printf("USART Init Failed in esp8266_driver.c\n");
+      printf("UART Init Failed in esp8266_driver.c\n");
     #endif // __DEBUG_LEVEL_1__
 
     #if defined(__DEBUG_LEVEL_2__)
       Debug_LED_Dis(DEBUG_INIT_FAILED, RTOS_VER);
     #endif //__DEBUG_LEVEL_2__
+
+    return;
   }
+
+  
+  hdma_rx.Instance = DMA1_Stream2;
+  hdma_rx.Init.Channel = DMA_CHANNEL_4;
+  hdma_rx.Init.Direction = DMA_PERIPH_TO_MEMORY;
+  hdma_rx.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
+  hdma_rx.Init.FIFOThreshold = DMA_FIFO_THRESHOLD_FULL;
+  hdma_rx.Init.MemBurst = DMA_MBURST_SINGLE;
+  hdma_rx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+  hdma_rx.Init.MemInc = DMA_MINC_ENABLE;
+  hdma_rx.Init.Mode = DMA_NORMAL;
+  hdma_rx.Init.PeriphBurst = DMA_PBURST_SINGLE;
+  hdma_rx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+  hdma_rx.Init.PeriphInc = DMA_PINC_DISABLE;
+  hdma_rx.Init.Priority = DMA_PRIORITY_MEDIUM;
+
+  if ( HAL_DMA_Init(&hdma_rx) != HAL_OK )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("DMA_Rx Init Failed in esp8266_driver.c\n");
+    #endif // __DEBUG_LEVEL_1__
+
+    #if defined(__DEBUG_LEVEL_2__)
+      Debug_LED_Dis(DEBUG_INIT_FAILED, RTOS_VER);
+    #endif //__DEBUG_LEVEL_2__
+
+    return;
+  }
+
+  hdma_tx.Instance = DMA1_Stream4;
+  hdma_tx.Init.Channel = DMA_CHANNEL_4;
+  hdma_tx.Init.Direction = DMA_MEMORY_TO_PERIPH;
+  hdma_tx.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
+  hdma_tx.Init.FIFOThreshold = DMA_FIFO_THRESHOLD_FULL;
+  hdma_tx.Init.MemBurst = DMA_MBURST_SINGLE;
+  hdma_tx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+  hdma_tx.Init.MemInc = DMA_MINC_ENABLE;
+  hdma_tx.Init.Mode = DMA_NORMAL;
+  hdma_tx.Init.PeriphBurst = DMA_PBURST_SINGLE;
+  hdma_tx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+  hdma_tx.Init.PeriphInc = DMA_PINC_DISABLE;
+  hdma_tx.Init.Priority = DMA_PRIORITY_MEDIUM;
+
+  if ( HAL_DMA_Init(&hdma_tx) != HAL_OK )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("DMA_Tx Init Failed in esp8266_driver.c\n");
+    #endif // __DEBUG_LEVEL_1__
+
+    #if defined(__DEBUG_LEVEL_2__)
+      Debug_LED_Dis(DEBUG_INIT_FAILED, RTOS_VER);
+    #endif //__DEBUG_LEVEL_2__
+
+    return;    
+  }
+
+  __HAL_LINKDMA(&esp8266_huart, hdmarx, hdma_rx);
+
+  __HAL_LINKDMA(&esp8266_huart, hdmatx, hdma_tx);
+
+  if ( HAL_UARTEx_ReceiveToIdle_DMA(&esp8266_huart, recv_temp, RECV_DATA_BUFFER) != HAL_OK )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("Failed to start ReceiveToIdle DMA!\n");
+    #endif
+
+    return;
+  }
+
+  __HAL_UART_ENABLE_IT(&esp8266_huart, UART_IT_IDLE); // 显示使能IDLE中断.
+  __HAL_UART_ENABLE_IT(&esp8266_huart, UART_IT_TC);  // 发送完成中断.
+
+  __HAL_UART_CLEAR_FLAG(&esp8266_huart, UART_FLAG_TC);
+
+  HAL_NVIC_SetPriority(UART4_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(UART4_IRQn);
+
+  HAL_NVIC_SetPriority(DMA1_Stream4_IRQn, 6, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream4_IRQn);
 
   printf("ESP8266 USART Init OK\n");
 }
+
 
 
 
@@ -259,7 +395,7 @@ ErrorStatus vEspInit_TaskCreate( void )
                                     INIT_TASK_DEPTH,
                                       NULL,
                                         INIT_TASK_PRIO,
-                                          NULL );
+                                         NULL );
   
   if ( err != pdPASS )
   {
@@ -275,4 +411,22 @@ ErrorStatus vEspInit_TaskCreate( void )
   }
 
   return SUCCESS;
+}
+
+
+
+static uint32_t usart_timeout_Calculate( uint16_t data_len )
+{
+  assert( data_len > 0 );
+
+  uint32_t per_Frame = 10;  // 一帧数据大小(+停止位 起始位).
+  uint32_t per_bit_us = 1000000 / ESP_UART_BAUDRATE;  // 1帧数据传输时间 us.
+  uint32_t transfer_time = data_len * per_Frame * per_bit_us;
+
+  // 增加50%的余量，并将其转换为ms.
+  uint32_t timeout = ( transfer_time * 3 / 2 ) / 1000;
+
+   // 最小和最大超时限制
+   return (timeout < 100) ? 100 : (timeout > 5000) ? 5000 : timeout;
+
 }

@@ -9,21 +9,25 @@
 #include <stdarg.h>
 #include <stdbool.h>
 #include <string.h>
+#include "main.h"
+#include <assert.h>
 
 /* ********************************************** */
-#define ESP_USART_BAUDRATE    9600
-#define ESP_USART_MODE        USART_MODE_TX_RX
-#define ESP_USART_STOPBITS    USART_STOPBITS_1
-#define ESP_USART_PARITY      USART_PARITY_NONE
-#define ESP_USART_WORDLENGTH  USART_WORDLENGTH_8B
+#define ESP_UART_BAUDRATE    9600
+#define ESP_UART_MODE        UART_MODE_TX_RX
+#define ESP_UART_STOPBITS    UART_STOPBITS_1
+#define ESP_UART_PARITY      UART_PARITY_NONE
+#define ESP_UART_WORDLENGTH  UART_WORDLENGTH_8B
+#define ESP_UART_HwFLOW      UART_HWCONTROL_NONE
+#define ESP_UART             UART4
 /* ********************************************** */
 
 
 /* ********************************************** */
-#define ESP_USART_RX          GPIO_PIN_3
-#define ESP_USART_TX          GPIO_PIN_2
-#define ESP_USART_PORT        GPIOA
-#define ESP_USART_RST         GPIO_PIN_1
+#define ESP_UART_RX          GPIO_PIN_11
+#define ESP_UART_TX          GPIO_PIN_10
+#define ESP_UART_PORT        GPIOC
+#define ESP_UART_RST         GPIO_PIN_1
 /* ********************************************** */
 
 
@@ -35,7 +39,8 @@
 
 /* ********************************************** */
 #define COMMAND_BUFFER         128
-#define RECV_DATA_BUFFER       1024
+#define RECV_DATA_BUFFER       512
+#define Tx_DATA_BUFFER         128
 #define RECV_DATA              (0xFF)
 #define NO_DATA                (0xFE)
 

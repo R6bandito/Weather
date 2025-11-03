@@ -39,18 +39,22 @@
 #include "main.h"
 #include "stm32f4xx_it.h"
 
-/** @addtogroup STM32F4xx_HAL_Examples
-  * @{
-  */
-
-/** @addtogroup Templates
-  * @{
-  */
-
-/* Private typedef -----------------------------------------------------------*/
-/* Private define ------------------------------------------------------------*/
-/* Private macro -------------------------------------------------------------*/
 /* Private variables ---------------------------------------------------------*/
+extern UART_HandleTypeDef esp8266_huart;
+
+extern volatile uint16_t recvData_len;
+
+extern uint8_t rx_flag;
+
+extern uint8_t esp8266_RecvBuffer[RECV_DATA_BUFFER];
+
+extern uint8_t recv_temp[RECV_DATA_BUFFER];
+
+extern DMA_HandleTypeDef  hdma_tx;
+
+extern TaskHandle_t xCurrentSendTaskHandle;
+
+
 
 /* Private function prototypes -----------------------------------------------*/
 /* Private functions ---------------------------------------------------------*/
@@ -58,6 +62,57 @@
 /******************************************************************************/
 /*            Cortex-M4 Processor Exceptions Handlers                         */
 /******************************************************************************/
+
+
+void UART4_IRQHandler ( void )
+{
+  HAL_UART_IRQHandler(&esp8266_huart); 
+} 
+
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
+{
+  if ( huart -> Instance == ESP_UART )
+  {
+    recvData_len = Size;
+
+    rx_flag = RECV_DATA;
+
+    memcpy(esp8266_RecvBuffer, recv_temp, RECV_DATA_BUFFER);
+
+    // 清空缓冲区.
+    memset(recv_temp, 0x00, RECV_DATA_BUFFER);
+
+    if ( HAL_UARTEx_ReceiveToIdle_DMA(&esp8266_huart, recv_temp, RECV_DATA_BUFFER) != HAL_OK )
+    {
+      #if defined(__DEBUG_LEVEL_1__)
+        printf("Failed to restart ReceiveToIdle DMA!\n");
+      #endif // __DEBUG_LEVEL_1__
+    }
+  }
+}
+
+
+void HAL_UART_TxCpltCallback( UART_HandleTypeDef *huart )
+{
+  if ( huart -> Instance == ESP_UART )
+  {
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE; 
+
+    vTaskNotifyGiveFromISR(xCurrentSendTaskHandle, &xHigherPriorityTaskWoken);
+    // huart->gState = HAL_UART_STATE_READY;
+    // hdma_tx.State = HAL_DMA_STATE_READY;
+
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+  }
+}
+
+
+void DMA1_Stream4_IRQHandler( void )
+{
+  HAL_DMA_IRQHandler( &hdma_tx ); 
+}
+
+
 
 /**
   * @brief  This function handles NMI exception.
