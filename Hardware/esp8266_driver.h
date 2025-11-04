@@ -37,8 +37,9 @@
 
 
 /* ********************************************** */
-#define INIT_TASK_DEPTH        128
+#define INIT_TASK_DEPTH        512
 #define INIT_TASK_PRIO         8
+#define MAX_RETRY_COUNT        3
 /* ********************************************** */
 
 
@@ -86,6 +87,7 @@ typedef struct
   char WifiPassword[65];
 
   EspWifiMode_t CurrentMode;
+  EspWifiMode_t TargetMode;
   EspStatus_t Status;  
 
   uint8_t RetryCount;      
@@ -99,6 +101,8 @@ typedef struct
 #ifdef __cplusplus
   extern "C" {
 #endif // __cplusplus
+
+  bool UART4_Init( void );
 
   ErrorStatus vEspInit_TaskCreate( void );
 

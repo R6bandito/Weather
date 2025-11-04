@@ -35,7 +35,7 @@ TaskHandle_t xCurrentSendTaskHandle = NULL;
 
 
 /* ********************************************** */
-static bool UART4_Init( void );
+bool UART4_Init( void );
 static void Wifi_Connect( void );
 static uint32_t usart_timeout_Calculate( uint16_t data_len );
 static void esp8266Handle_Initial( ESP8266_HandleTypeDef *hpesp8266 );
@@ -47,28 +47,206 @@ void vtask8266_Init( void *parameter )
 {
   esp8266Handle_Initial( &hesp8266 );
 
+  xMutexEsp = xSemaphoreCreateRecursiveMutex();
+  if ( xMutexEsp == NULL )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("xMutexEsp Get Failed in esp8266_driver.c.\n");
+    #endif // __DEBUG_LEVEL_1__
+
+    #if defined(__DEBUG_LEVEL_2__)
+      Debug_LED_Dis(DEBUG_SOURCE_GET_FAILED, RTOS_VER);
+    #endif // __DEBUG_LEVEL_2__
+  }
+
   EspInitState_t currentState = INIT_STATE_RESET;
 
   #if defined(__DEBUG_LEVEL_1__)
     printf("Esp8266 Init Start.\n");
   #endif // __DEBUG_LEVEL_1__
 
-  if ( !UART4_Init() )
-	{
-		#if defined(__DEBUG_LEVEL_1__)
-			printf("UART Init Failed!\n");
-		#endif // __DEBUG_LEVEL_1__
-
-		#if defined(__DEBUG_LEVEL_2__)
-			Debug_LED_Dis(DEBUG_INIT_FAILED, RTOS_VER);
-		#endif // __DEBUG_LEVEL_2__
-
-    /* 复位 待写 */
-	}
-
   while( (currentState != INIT_STATE_ERROR) && (currentState != INIT_STATE_COMPLETE) )
   {
- 
+    switch(currentState)
+    {
+      case INIT_STATE_RESET:
+        {
+          if ( esp8266_SendAT("AT+RST") )
+          {
+            void *pReady = esp8266_WaitResponse("OK", usart_timeout_Calculate(strlen("OK")));
+
+            if ( pReady != NULL )
+            {
+              printf("ESP8266 Reset OK!\n");
+              currentState = INIT_STATE_CHECK_AT;
+              hesp8266.RetryCount = 0;  // 重置重试计数.
+              HAL_Delay(pdMS_TO_TICKS(500));  // 复位后等待模块启动.
+            }
+            else 
+            {
+              printf("ESP8266 Reset Failed!\n");
+              hesp8266.RetryCount++;
+            }
+          }
+          else 
+          {
+            printf("Send AT+RST Command Failed!\n");
+            hesp8266.RetryCount++;
+          }
+          break;
+        }
+
+      case INIT_STATE_CHECK_AT:      
+        {
+          if ( esp8266_SendAT("AT") && 
+                esp8266_WaitResponse("OK", usart_timeout_Calculate(strlen("OK"))) 
+            )
+          {
+            printf("AT Check OK.\n");
+            currentState = INIT_STATE_SET_MODE;
+            hesp8266.RetryCount = 0;
+          }
+          else 
+          {
+            printf("AT Test Failed!\n");
+            hesp8266.RetryCount++;
+          }
+          break;
+        }
+      
+      case INIT_STATE_SET_MODE:
+        {
+          if ( esp8266_ConnectModeChange(hesp8266.TargetMode) == hesp8266.TargetMode )
+          {
+            void *pOK = esp8266_WaitResponse("OK", usart_timeout_Calculate(strlen("OK")));
+
+            if ( pOK != NULL )
+            {
+              printf("Wifi Mode Set OK.\n");
+              currentState = INIT_STATE_CONNECT_WIFI;
+              hesp8266.RetryCount = 0;
+            }
+            else 
+            {
+              printf("Wifi Mode Wait Response Failed!\n");
+              hesp8266.RetryCount++;
+            }
+          }
+          else 
+          {
+            printf("Set Wifi Mode Failed!\n");
+            hesp8266.RetryCount++;
+          }
+          break;
+        }
+
+      case INIT_STATE_CONNECT_WIFI:
+        {
+          char *patCommand = (char *)pvPortMalloc(128);
+          if ( patCommand != NULL )
+          {
+            int len = snprintf(patCommand, 128, "AT+CWJAP=\"%s\",\"%s\"", hesp8266.WifiSSID, hesp8266.WifiPassword);
+            if (len < 0 || len >= 128) 
+            {
+              printf("AT Command Format Error or Too Long! len=%d\n", len);
+              hesp8266.RetryCount++;
+              goto Free;
+            }
+          }
+          else 
+          {
+            printf("Memory Allocation Failed!\n");
+            hesp8266.RetryCount++;
+            break;
+          }
+
+  
+
+          if ( esp8266_SendAT("%s", patCommand) )
+          {
+            void *pConnectOK = esp8266_WaitResponse("WIFI GOT IP", 15000); // WIFI连接时间较长.
+            if ( pConnectOK != NULL )
+            {
+              printf("Wifi Connected.\n");
+              currentState = INIT_STATE_GET_IP;
+              hesp8266.RetryCount = 0;
+            }
+            else 
+            {
+              /* 错误码检查. 涉及复杂缓冲区管理 待实现. */
+              printf("Wifi Connect Timeout!\n");
+              hesp8266.RetryCount++;
+            }
+          }
+          else 
+          {
+            printf("Send AT+CWJAP command failed.\n");
+            hesp8266.RetryCount++;
+          }
+Free:
+          vPortFree(patCommand);
+          break;
+        }
+
+      case INIT_STATE_GET_IP:
+        {
+          if ( esp8266_SendAT("AT+CIPSTA?") )
+          {
+            void *pResponse = esp8266_WaitResponse("+CIPSTA:", 5000);
+            if ( pResponse != NULL )
+            {
+              // 成功获取到IP信息.
+              printf("Got IP Address Information\n");
+
+              /* 进一步解析获取到的IP 待实现. */
+
+              currentState = INIT_STATE_COMPLETE;
+              hesp8266.RetryCount = 0;
+            }
+            else 
+            {
+              printf("Get IP Address Failed!\n");
+              hesp8266.RetryCount++;
+            }
+          }
+          else 
+          {
+            printf("Send AT+CIPSTA? command failed.\n");
+            hesp8266.RetryCount++;
+          }
+          break;
+        }
+
+      default: 
+        {
+          currentState = INIT_STATE_ERROR;
+          break;
+        }
+    }
+
+    if ( hesp8266.RetryCount >= MAX_RETRY_COUNT)
+    {
+      printf("Max retry attempts (%d) reached at state %d. Initialization Failed.\n", MAX_RETRY_COUNT, currentState);
+
+      __disable_irq();
+
+      HAL_Delay(500);
+
+      NVIC_SystemReset();
+    }
+
+    if ( (currentState != INIT_STATE_COMPLETE) && (currentState != INIT_STATE_ERROR) && hesp8266.RetryCount != 0 )
+    {
+      vTaskDelay(pdMS_TO_TICKS(1000));  // 延迟1s后尝试重新初始化对应状态.
+    }
+
+    if ( currentState == INIT_STATE_ERROR )
+    {
+      printf("ESP8266 Initialization Failed. Please check hardware and configuration.\n");
+
+      for( ; ; ); // 错误循环 用于调试.
+    }
+
   }
 
   /*    TEST     */
@@ -362,7 +540,7 @@ void *esp8266_WaitResponse( const char* expected, uint32_t timeout_ms )
 
 
 
-static bool UART4_Init( void )
+bool UART4_Init( void )
 {
   __HAL_RCC_UART4_CLK_ENABLE();
 
@@ -531,6 +709,7 @@ static void esp8266Handle_Initial( ESP8266_HandleTypeDef *hpesp8266 )
   hpesp8266->MaxRetry = 3;
   hpesp8266->Status = ESP_STATUS_DISCONNECTED;
   hpesp8266->CurrentMode = ESP_WIFI_ERROR;
+  hpesp8266->TargetMode = STATION_SOFTAP;
 
   strncpy(hpesp8266->WifiSSID, WIFI_SSID, sizeof(hpesp8266->WifiSSID) - 1);
   hpesp8266->WifiSSID[sizeof(hpesp8266->WifiSSID) - 1] = '\0';
