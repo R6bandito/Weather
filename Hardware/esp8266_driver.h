@@ -11,6 +11,7 @@
 #include <string.h>
 #include "main.h"
 #include <assert.h>
+#include "queue.h"
 
 /* ********************************************** */
 #define WIFI_SSID           "Your_Wifi_Name"
@@ -49,6 +50,7 @@
 #define Tx_DATA_BUFFER         128
 #define RECV_DATA              (0xFF)
 #define NO_DATA                (0xFE)
+#define DATA_QUEUE_LENGTH      4
 
 // WIFI模式枚举.
 typedef enum {
@@ -69,7 +71,7 @@ typedef enum {
   ESP_STATUS_UNKNOWN
 } EspStatus_t;
 
-
+// 初始化状态枚举.
 typedef enum {
   INIT_STATE_RESET,
   INIT_STATE_CHECK_AT,
@@ -81,6 +83,21 @@ typedef enum {
 } EspInitState_t;
 
 
+typedef enum {
+  LastRecvFrame_Valid,  // 接收到的最新数据帧仍未被解析.
+  LastRecvFrame_Used    // 接收到的最新数据帧已被解析.
+} FrameStatus_t;
+
+ 
+typedef struct
+{
+  uint8_t RecvData[RECV_DATA_BUFFER];
+
+  size_t Data_Len;
+
+} EspRecvMsg_t;
+
+
 typedef struct 
 {
   char WifiSSID[33];
@@ -89,6 +106,9 @@ typedef struct
   EspWifiMode_t CurrentMode;
   EspWifiMode_t TargetMode;
   EspStatus_t Status;  
+  QueueHandle_t  xRecvQueue;
+  EspRecvMsg_t LastReceivedFrame;
+  FrameStatus_t LastFrameValid;
 
   uint8_t RetryCount;      
   uint8_t MaxRetry;        
@@ -113,6 +133,9 @@ typedef struct
   bool esp8266_SendAT( const char* format, ... );
 
   void *esp8266_WaitResponse( const char* expected, uint32_t timeout_ms );
+
+  void esp8266_DropLastFrame(void);
+
 
 
 #ifdef __cplusplus

@@ -7,15 +7,17 @@ ESP8266_HandleTypeDef hesp8266 = { 0 };
 
 UART_HandleTypeDef esp8266_huart;
 
+QueueHandle_t xRecvDataQueue;
+
 SemaphoreHandle_t xMutexEsp;
 
-DMA_HandleTypeDef  hdma_rx;
+extern DMA_HandleTypeDef  hdma_rx;
 
-DMA_HandleTypeDef  hdma_tx;
+extern DMA_HandleTypeDef  hdma_tx;
 
 uint8_t rx_flag = NO_DATA;
 
-uint8_t esp8266_RecvBuffer[RECV_DATA_BUFFER] = { 0 }; 
+//uint8_t esp8266_RecvBuffer[RECV_DATA_BUFFER] = { 0 }; 
 
 uint8_t esp8266_TxBuffer[Tx_DATA_BUFFER] = { 0 };
 
@@ -73,10 +75,11 @@ void vtask8266_Init( void *parameter )
         {
           if ( esp8266_SendAT("AT+RST") )
           {
-            void *pReady = esp8266_WaitResponse("OK", usart_timeout_Calculate(strlen("OK")));
+            void *pReady = esp8266_WaitResponse("OK", 250);
 
             if ( pReady != NULL )
             {
+              esp8266_DropLastFrame();
               printf("ESP8266 Reset OK!\n");
               currentState = INIT_STATE_CHECK_AT;
               hesp8266.RetryCount = 0;  // 重置重试计数.
@@ -99,9 +102,10 @@ void vtask8266_Init( void *parameter )
       case INIT_STATE_CHECK_AT:      
         {
           if ( esp8266_SendAT("AT") && 
-                esp8266_WaitResponse("OK", usart_timeout_Calculate(strlen("OK"))) 
+                esp8266_WaitResponse("OK", 250) 
             )
           {
+            esp8266_DropLastFrame();
             printf("AT Check OK.\n");
             currentState = INIT_STATE_SET_MODE;
             hesp8266.RetryCount = 0;
@@ -118,10 +122,11 @@ void vtask8266_Init( void *parameter )
         {
           if ( esp8266_ConnectModeChange(hesp8266.TargetMode) == hesp8266.TargetMode )
           {
-            void *pOK = esp8266_WaitResponse("OK", usart_timeout_Calculate(strlen("OK")));
+            void *pOK = esp8266_WaitResponse("OK", 250);
 
             if ( pOK != NULL )
             {
+              esp8266_DropLastFrame();
               printf("Wifi Mode Set OK.\n");
               currentState = INIT_STATE_CONNECT_WIFI;
               hesp8266.RetryCount = 0;
@@ -167,6 +172,7 @@ void vtask8266_Init( void *parameter )
             void *pConnectOK = esp8266_WaitResponse("WIFI GOT IP", 15000); // WIFI连接时间较长.
             if ( pConnectOK != NULL )
             {
+              esp8266_DropLastFrame();
               printf("Wifi Connected.\n");
               currentState = INIT_STATE_GET_IP;
               hesp8266.RetryCount = 0;
@@ -195,6 +201,7 @@ Free:
             void *pResponse = esp8266_WaitResponse("+CIPSTA:", 5000);
             if ( pResponse != NULL )
             {
+              esp8266_DropLastFrame();
               // 成功获取到IP信息.
               printf("Got IP Address Information\n");
 
@@ -227,8 +234,6 @@ Free:
     if ( hesp8266.RetryCount >= MAX_RETRY_COUNT)
     {
       printf("Max retry attempts (%d) reached at state %d. Initialization Failed.\n", MAX_RETRY_COUNT, currentState);
-
-      __disable_irq();
 
       HAL_Delay(500);
 
@@ -494,46 +499,66 @@ void *esp8266_WaitResponse( const char* expected, uint32_t timeout_ms )
       Debug_LED_Dis(DEBUG_WRONG_PARAM, RTOS_VER);
     #endif // __DEBUG_LEVEL_2__
 
-    return false;
+    return NULL;
   }
 
-  uint16_t hayStack_len = strlen(expected);
-
-  const uint8_t *rx_data;
-
-  uint16_t data_len = 0;
-
-  TickType_t start_time = xTaskGetTickCount();
-
-  while( (xTaskGetTickCount() - start_time) < timeout_ms )
+  if ( hesp8266.LastFrameValid == LastRecvFrame_Valid )
   {
-    if ( rx_flag == RECV_DATA )
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("Last frame still valid!\n");
+    #endif // __DEBUG_LEVEL_1__
+
+    return NULL;  //  上一帧数据仍未被解析,拒绝接受新帧.
+  }
+
+  uint16_t hayNeed_len = strlen(expected);
+
+  TickType_t xTicksToWait = pdMS_TO_TICKS(timeout_ms);
+
+  while( xTicksToWait > 0 )
+  {
+    BaseType_t err = xSemaphoreTakeRecursive(xMutexEsp, 200);
+
+    if ( err != pdPASS )
+      return NULL;
+
+    if ( xQueueReceive(hesp8266.xRecvQueue, &hesp8266.LastReceivedFrame, xTicksToWait) == pdTRUE )
     {
-      BaseType_t err = xSemaphoreTakeRecursive(xMutexEsp, 500);
-      if ( err != pdPASS ) 
-        return false;
 
-      rx_data = esp8266_RecvBuffer;
-
-      data_len = recvData_len;
-
-      uint8_t *pSearch = memmem(rx_data, data_len, expected, hayStack_len);
+      void *pSearch = memmem(hesp8266.LastReceivedFrame.RecvData, hesp8266.LastReceivedFrame.Data_Len, expected, hayNeed_len);
 
       if ( pSearch != NULL )
       {
+        // 成功找到相关子串.
+        hesp8266.LastFrameValid = LastRecvFrame_Valid;
+
         xSemaphoreGiveRecursive(xMutexEsp);
 
-        return (void *)pSearch;
+        return pSearch;
+      }
+      else 
+      {
+        // 没找到，继续等待下一帧数据.
+        continue;
       }
     }
+    else 
+    {
+      // 队列接收超时.
+      #if defined(__DEBUG_LEVEL_1__)
+        printf("Queue Recv Timeout!\n");
+      #endif 
 
-    vTaskDelay(pdMS_TO_TICKS(2));
+      break;
+    }
   }
 
-  // 等待响应超时.
+  // 等待超时.
   #if defined(__DEBUG_LEVEL_1__)
     printf("WaitResponse Timeout!\n");
   #endif // __DEBUG_LEVEL_1__
+
+  xSemaphoreGiveRecursive(xMutexEsp);
 
   return NULL;
 }
@@ -566,65 +591,6 @@ bool UART4_Init( void )
 
     return false;
   }
-
-  
-  hdma_rx.Instance = DMA1_Stream2;
-  hdma_rx.Init.Channel = DMA_CHANNEL_4;
-  hdma_rx.Init.Direction = DMA_PERIPH_TO_MEMORY;
-  hdma_rx.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
-  hdma_rx.Init.FIFOThreshold = DMA_FIFO_THRESHOLD_FULL;
-  hdma_rx.Init.MemBurst = DMA_MBURST_SINGLE;
-  hdma_rx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
-  hdma_rx.Init.MemInc = DMA_MINC_ENABLE;
-  hdma_rx.Init.Mode = DMA_NORMAL;
-  hdma_rx.Init.PeriphBurst = DMA_PBURST_SINGLE;
-  hdma_rx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
-  hdma_rx.Init.PeriphInc = DMA_PINC_DISABLE;
-  hdma_rx.Init.Priority = DMA_PRIORITY_MEDIUM;
-
-  if ( HAL_DMA_Init(&hdma_rx) != HAL_OK )
-  {
-    #if defined(__DEBUG_LEVEL_1__)
-      printf("DMA_Rx Init Failed in esp8266_driver.c\n");
-    #endif // __DEBUG_LEVEL_1__
-
-    #if defined(__DEBUG_LEVEL_2__)
-      Debug_LED_Dis(DEBUG_INIT_FAILED, RTOS_VER);
-    #endif //__DEBUG_LEVEL_2__
-
-    return false;
-  }
-
-  hdma_tx.Instance = DMA1_Stream4;
-  hdma_tx.Init.Channel = DMA_CHANNEL_4;
-  hdma_tx.Init.Direction = DMA_MEMORY_TO_PERIPH;
-  hdma_tx.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
-  hdma_tx.Init.FIFOThreshold = DMA_FIFO_THRESHOLD_FULL;
-  hdma_tx.Init.MemBurst = DMA_MBURST_SINGLE;
-  hdma_tx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
-  hdma_tx.Init.MemInc = DMA_MINC_ENABLE;
-  hdma_tx.Init.Mode = DMA_NORMAL;
-  hdma_tx.Init.PeriphBurst = DMA_PBURST_SINGLE;
-  hdma_tx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
-  hdma_tx.Init.PeriphInc = DMA_PINC_DISABLE;
-  hdma_tx.Init.Priority = DMA_PRIORITY_MEDIUM;
-
-  if ( HAL_DMA_Init(&hdma_tx) != HAL_OK )
-  {
-    #if defined(__DEBUG_LEVEL_1__)
-      printf("DMA_Tx Init Failed in esp8266_driver.c\n");
-    #endif // __DEBUG_LEVEL_1__
-
-    #if defined(__DEBUG_LEVEL_2__)
-      Debug_LED_Dis(DEBUG_INIT_FAILED, RTOS_VER);
-    #endif //__DEBUG_LEVEL_2__
-
-    return false;    
-  }
-
-  __HAL_LINKDMA(&esp8266_huart, hdmarx, hdma_rx);
-
-  __HAL_LINKDMA(&esp8266_huart, hdmatx, hdma_tx);
 
   if ( HAL_UARTEx_ReceiveToIdle_DMA(&esp8266_huart, recv_temp, RECV_DATA_BUFFER) != HAL_OK )
   {
@@ -698,6 +664,20 @@ static uint32_t usart_timeout_Calculate( uint16_t data_len )
 }
 
 
+void esp8266_DropLastFrame(void)
+{
+    if (xSemaphoreTakeRecursive(xMutexEsp, portMAX_DELAY) == pdPASS)
+    {
+        hesp8266.LastFrameValid = LastRecvFrame_Used;
+
+        //清空数据
+        memset(&hesp8266.LastReceivedFrame, 0, sizeof(EspRecvMsg_t));
+
+        xSemaphoreGiveRecursive(xMutexEsp);
+    }
+}
+
+
 static void esp8266Handle_Initial( ESP8266_HandleTypeDef *hpesp8266 )
 {
   if ( hpesp8266 == NULL )
@@ -710,10 +690,25 @@ static void esp8266Handle_Initial( ESP8266_HandleTypeDef *hpesp8266 )
   hpesp8266->Status = ESP_STATUS_DISCONNECTED;
   hpesp8266->CurrentMode = ESP_WIFI_ERROR;
   hpesp8266->TargetMode = STATION_SOFTAP;
+  hpesp8266->LastReceivedFrame.Data_Len = 0;
+  hpesp8266->LastFrameValid = LastRecvFrame_Used;
 
   strncpy(hpesp8266->WifiSSID, WIFI_SSID, sizeof(hpesp8266->WifiSSID) - 1);
   hpesp8266->WifiSSID[sizeof(hpesp8266->WifiSSID) - 1] = '\0';
 
   strncpy(hpesp8266->WifiPassword, WIFI_PASSWORD, sizeof(hpesp8266->WifiPassword) - 1);
   hpesp8266->WifiPassword[sizeof(hpesp8266->WifiPassword) - 1] = '\0';
+
+  hpesp8266->xRecvQueue = xQueueCreate(DATA_QUEUE_LENGTH, sizeof(EspRecvMsg_t));
+
+  if ( hpesp8266->xRecvQueue == NULL )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("Failed to create Rx Queue!\n");
+    #endif
+
+    #if defined(__DEBUG_LEVEL_2__)
+      Debug_LED_Dis(DEBUG_SOURCE_GET_FAILED, RTOS_VER);
+    #endif 
+  }
 }

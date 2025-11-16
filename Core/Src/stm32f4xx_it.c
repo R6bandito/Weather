@@ -54,6 +54,8 @@ extern DMA_HandleTypeDef  hdma_tx;
 
 extern TaskHandle_t xCurrentSendTaskHandle;
 
+extern ESP8266_HandleTypeDef hesp8266;
+
 
 
 /* Private function prototypes -----------------------------------------------*/
@@ -73,14 +75,25 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 {
   if ( huart -> Instance == ESP_UART )
   {
-    recvData_len = Size;
+    EspRecvMsg_t msg;
+
+    msg.Data_Len = Size;
 
     rx_flag = RECV_DATA;
 
-    memcpy(esp8266_RecvBuffer, recv_temp, RECV_DATA_BUFFER);
+    memcpy(msg.RecvData, recv_temp, Size);
 
     // 清空缓冲区.
     memset(recv_temp, 0x00, RECV_DATA_BUFFER);
+
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
+    if ( xQueueSendFromISR(hesp8266.xRecvQueue, &msg, &xHigherPriorityTaskWoken) != pdTRUE )
+    {
+      #if defined(__DEBUG_LEVEL_1__)
+        printf("Rx Queue Full! Data Dropped!\n");
+      #endif 
+    }
 
     if ( HAL_UARTEx_ReceiveToIdle_DMA(&esp8266_huart, recv_temp, RECV_DATA_BUFFER) != HAL_OK )
     {
@@ -99,8 +112,6 @@ void HAL_UART_TxCpltCallback( UART_HandleTypeDef *huart )
     BaseType_t xHigherPriorityTaskWoken = pdFALSE; 
 
     vTaskNotifyGiveFromISR(xCurrentSendTaskHandle, &xHigherPriorityTaskWoken);
-    // huart->gState = HAL_UART_STATE_READY;
-    // hdma_tx.State = HAL_DMA_STATE_READY;
 
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
   }

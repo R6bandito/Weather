@@ -1,5 +1,11 @@
 #include "Mspinit.h"
 
+DMA_HandleTypeDef  hdma_rx;
+
+DMA_HandleTypeDef  hdma_tx;
+
+extern UART_HandleTypeDef esp8266_huart;
+
 
 void HAL_USART_MspInit( USART_HandleTypeDef *husart )
 {
@@ -45,6 +51,62 @@ void HAL_UART_MspInit( UART_HandleTypeDef *huart )
     GPIO_InitStructure.Pin = ESP_UART_RX;
     GPIO_InitStructure.Pull = GPIO_PULLUP;
     HAL_GPIO_Init(ESP_UART_PORT, &GPIO_InitStructure);
+
+    hdma_rx.Instance = DMA1_Stream2;
+    hdma_rx.Init.Channel = DMA_CHANNEL_4;
+    hdma_rx.Init.Direction = DMA_PERIPH_TO_MEMORY;
+    hdma_rx.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
+    hdma_rx.Init.FIFOThreshold = DMA_FIFO_THRESHOLD_FULL;
+    hdma_rx.Init.MemBurst = DMA_MBURST_SINGLE;
+    hdma_rx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+    hdma_rx.Init.MemInc = DMA_MINC_ENABLE;
+    hdma_rx.Init.Mode = DMA_NORMAL;
+    hdma_rx.Init.PeriphBurst = DMA_PBURST_SINGLE;
+    hdma_rx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+    hdma_rx.Init.PeriphInc = DMA_PINC_DISABLE;
+    hdma_rx.Init.Priority = DMA_PRIORITY_MEDIUM;
+  
+    if ( HAL_DMA_Init(&hdma_rx) != HAL_OK )
+    {
+      #if defined(__DEBUG_LEVEL_1__)
+        printf("DMA_Rx Init Failed in esp8266_driver.c\n");
+      #endif // __DEBUG_LEVEL_1__
+  
+      #if defined(__DEBUG_LEVEL_2__)
+        Debug_LED_Dis(DEBUG_INIT_FAILED, RTOS_VER);
+      #endif //__DEBUG_LEVEL_2__
+  
+    }
+  
+    hdma_tx.Instance = DMA1_Stream4;
+    hdma_tx.Init.Channel = DMA_CHANNEL_4;
+    hdma_tx.Init.Direction = DMA_MEMORY_TO_PERIPH;
+    hdma_tx.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
+    hdma_tx.Init.FIFOThreshold = DMA_FIFO_THRESHOLD_FULL;
+    hdma_tx.Init.MemBurst = DMA_MBURST_SINGLE;
+    hdma_tx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+    hdma_tx.Init.MemInc = DMA_MINC_ENABLE;
+    hdma_tx.Init.Mode = DMA_NORMAL;
+    hdma_tx.Init.PeriphBurst = DMA_PBURST_SINGLE;
+    hdma_tx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+    hdma_tx.Init.PeriphInc = DMA_PINC_DISABLE;
+    hdma_tx.Init.Priority = DMA_PRIORITY_MEDIUM;
+  
+    if ( HAL_DMA_Init(&hdma_tx) != HAL_OK )
+    {
+      #if defined(__DEBUG_LEVEL_1__)
+        printf("DMA_Tx Init Failed in esp8266_driver.c\n");
+      #endif // __DEBUG_LEVEL_1__
+  
+      #if defined(__DEBUG_LEVEL_2__)
+        Debug_LED_Dis(DEBUG_INIT_FAILED, RTOS_VER);
+      #endif //__DEBUG_LEVEL_2__
+     
+    }
+  
+    __HAL_LINKDMA(&esp8266_huart, hdmarx, hdma_rx);
+  
+    __HAL_LINKDMA(&esp8266_huart, hdmatx, hdma_tx);
   }
 }
 
