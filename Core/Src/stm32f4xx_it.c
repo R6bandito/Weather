@@ -68,6 +68,20 @@ extern ESP8266_HandleTypeDef hesp8266;
 
 void UART4_IRQHandler ( void )
 {
+  uint32_t isrflags   = READ_REG(UART4->SR);
+  uint32_t cr3its     = READ_REG(UART4->CR3);
+  // 检查是否有错误标志
+  if (isrflags & (UART_FLAG_ORE | UART_FLAG_NE | UART_FLAG_FE))
+  {
+      printf("UART ERROR! SR=0x%04X\n", isrflags);
+
+      __HAL_UART_CLEAR_OREFLAG(&esp8266_huart);
+      __HAL_UART_CLEAR_FEFLAG(&esp8266_huart);
+      __HAL_UART_CLEAR_NEFLAG(&esp8266_huart);
+
+      HAL_UART_AbortReceive(&esp8266_huart);
+      HAL_UARTEx_ReceiveToIdle_DMA(&esp8266_huart, recv_temp, RECV_DATA_BUFFER);
+  }
   HAL_UART_IRQHandler(&esp8266_huart); 
 } 
 
@@ -81,7 +95,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 
     rx_flag = RECV_DATA;
 
-    memcpy(msg.RecvData, recv_temp, Size);
+    memcpy(msg.RecvData, recv_temp, msg.Data_Len);
 
     // 清空缓冲区.
     memset(recv_temp, 0x00, RECV_DATA_BUFFER);

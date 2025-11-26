@@ -5,9 +5,13 @@ int main( void )
 {
 	HAL_Init();
 
+#if defined(__DEBUG_LEVEL_2__)
 	Debug_Led_Init();
+#endif // __DEBUG_LEVEL_2__
 
+#if defined(__DEBUG_LEVEL_1__)
 	Debug_USART_Init();
+#endif // __DEBUG_LEVEL_1__
 
 	if ( !UART4_Init() )
 	{
@@ -32,9 +36,8 @@ int main( void )
 
 	while(1)
 	{
-		printf("Heelo.\n");
-
-		HAL_Delay(1000);
+		// 正常运行流程下程序不会执行到此处.
+		printf("Error! Task Running Error!\n");
 	}
 	
 }

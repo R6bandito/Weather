@@ -484,6 +484,16 @@
               <FileType>5</FileType>
               <FilePath>.\Drivers\BSP\rtos_hook.h</FilePath>
             </File>
+            <File>
+              <FileName>at_parser.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\Drivers\BSP\at_parser.c</FilePath>
+            </File>
+            <File>
+              <FileName>at_parser.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\Drivers\BSP\at_parser.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

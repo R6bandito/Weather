@@ -17,8 +17,6 @@ extern DMA_HandleTypeDef  hdma_tx;
 
 uint8_t rx_flag = NO_DATA;
 
-//uint8_t esp8266_RecvBuffer[RECV_DATA_BUFFER] = { 0 }; 
-
 uint8_t esp8266_TxBuffer[Tx_DATA_BUFFER] = { 0 };
 
 uint8_t recv_temp[RECV_DATA_BUFFER] = { 0 };
@@ -41,6 +39,16 @@ bool UART4_Init( void );
 static void Wifi_Connect( void );
 static uint32_t usart_timeout_Calculate( uint16_t data_len );
 static void esp8266Handle_Initial( ESP8266_HandleTypeDef *hpesp8266 );
+static BaseType_t esp8266_ClearRecvQueue_Manual( void );
+static void FlushRecvQueue( void );
+bool at_extractString_between_quotes
+( 
+  ESP8266_HandleTypeDef *hpesp8266, 
+  const char* key,
+  char* out_val,
+  uint8_t out_len,
+  BaseType_t mode
+);
 /* ********************************************** */
 
 
@@ -59,62 +67,48 @@ void vtask8266_Init( void *parameter )
     #if defined(__DEBUG_LEVEL_2__)
       Debug_LED_Dis(DEBUG_SOURCE_GET_FAILED, RTOS_VER);
     #endif // __DEBUG_LEVEL_2__
+
+    for(; ;);
   }
 
-  EspInitState_t currentState = INIT_STATE_RESET;
+  FlushRecvQueue();
+
+  EspInitState_t currentState = INIT_STATE_CHECK_AT;
 
   #if defined(__DEBUG_LEVEL_1__)
     printf("Esp8266 Init Start.\n");
   #endif // __DEBUG_LEVEL_1__
 
+
   while( (currentState != INIT_STATE_ERROR) && (currentState != INIT_STATE_COMPLETE) )
   {
     switch(currentState)
     {
-      case INIT_STATE_RESET:
+      case INIT_STATE_CHECK_AT:      
         {
-          if ( esp8266_SendAT("AT+RST") )
+          if ( esp8266_SendAT("AT") )
           {
             void *pReady = esp8266_WaitResponse("OK", 250);
 
             if ( pReady != NULL )
             {
               esp8266_DropLastFrame();
-              printf("ESP8266 Reset OK!\n");
-              currentState = INIT_STATE_CHECK_AT;
-              hesp8266.RetryCount = 0;  // 重置重试计数.
-              HAL_Delay(pdMS_TO_TICKS(500));  // 复位后等待模块启动.
+              printf("AT Check OK.\n");
+              currentState = INIT_STATE_SET_MODE;
+              hesp8266.RetryCount = 0;
             }
             else 
             {
-              printf("ESP8266 Reset Failed!\n");
+              printf("AT Test Failed!\n");
               hesp8266.RetryCount++;
             }
           }
           else 
           {
-            printf("Send AT+RST Command Failed!\n");
+            printf("Send AT Command Failed!\n");
             hesp8266.RetryCount++;
           }
-          break;
-        }
 
-      case INIT_STATE_CHECK_AT:      
-        {
-          if ( esp8266_SendAT("AT") && 
-                esp8266_WaitResponse("OK", 250) 
-            )
-          {
-            esp8266_DropLastFrame();
-            printf("AT Check OK.\n");
-            currentState = INIT_STATE_SET_MODE;
-            hesp8266.RetryCount = 0;
-          }
-          else 
-          {
-            printf("AT Test Failed!\n");
-            hesp8266.RetryCount++;
-          }
           break;
         }
       
@@ -128,6 +122,7 @@ void vtask8266_Init( void *parameter )
             {
               esp8266_DropLastFrame();
               printf("Wifi Mode Set OK.\n");
+              hesp8266.CurrentMode = hesp8266.TargetMode;
               currentState = INIT_STATE_CONNECT_WIFI;
               hesp8266.RetryCount = 0;
             }
@@ -201,11 +196,13 @@ Free:
             void *pResponse = esp8266_WaitResponse("+CIPSTA:", 5000);
             if ( pResponse != NULL )
             {
-              esp8266_DropLastFrame();
+              //esp8266_DropLastFrame();
               // 成功获取到IP信息.
               printf("Got IP Address Information\n");
 
-              /* 进一步解析获取到的IP 待实现. */
+              at_extractString_between_quotes(&hesp8266, "+CIPSTA:ip", hesp8266.Wifi_Ipv4, WIFI_IPV4_LENGTH, pdTRUE);
+
+              esp8266_SendAT("%s", hesp8266.Wifi_Ipv4);
 
               currentState = INIT_STATE_COMPLETE;
               hesp8266.RetryCount = 0;
@@ -233,6 +230,8 @@ Free:
 
     if ( hesp8266.RetryCount >= MAX_RETRY_COUNT)
     {
+      for(; ;); // 用于调试. 
+
       printf("Max retry attempts (%d) reached at state %d. Initialization Failed.\n", MAX_RETRY_COUNT, currentState);
 
       HAL_Delay(500);
@@ -242,7 +241,7 @@ Free:
 
     if ( (currentState != INIT_STATE_COMPLETE) && (currentState != INIT_STATE_ERROR) && hesp8266.RetryCount != 0 )
     {
-      vTaskDelay(pdMS_TO_TICKS(1000));  // 延迟1s后尝试重新初始化对应状态.
+      HAL_Delay(pdMS_TO_TICKS(1000));  // 延迟1s后尝试重新初始化对应状态.
     }
 
     if ( currentState == INIT_STATE_ERROR )
@@ -251,48 +250,22 @@ Free:
 
       for( ; ; ); // 错误循环 用于调试.
     }
-
   }
+
+  if ( currentState == INIT_STATE_COMPLETE )
+  {
+    for( ; ; );
+  }
+
 
   /*    TEST     */
-
-  xMutexEsp = xSemaphoreCreateRecursiveMutex();
-  if ( xMutexEsp == NULL )
-  {
-    #if defined(__DEBUG_LEVEL_1__)
-      printf("Mutex Get Failed in esp8266_driver.c\n");
-    #endif // __DEBUG_LEVEL_1__
-
-    #if defined(__DEBUG_LEVEL_2__)
-      Debug_LED_Dis(DEBUG_SOURCE_GET_FAILED, RTOS_VER);
-    #endif // __DEBUG_LEVEL_2__
-  }
-
-  // TEST.
-  for( ; ; )
-  {
-    printf("vtask8266 RUNNING!\n");
-
-    esp8266_SendAT("AT+CWMODE=3");
-
-    vTaskDelay(pdMS_TO_TICKS(1000));
-
-    if ( rx_flag == RECV_DATA )
-    {
-      printf("Recv Data Len: %d\n", recvData_len);
-
-      rx_flag = NO_DATA;
-    }
-  }
-    /*    TEST     */
-
 }
 
 
 /**
  * @brief 在数据块中搜索子串.
  */
-static void*  memmem( 
+void*  memmem( 
                       const uint8_t *haystack, uint16_t stack_len, 
                       const void* need_str,    uint16_t need_str_len                      
                     )
@@ -710,5 +683,153 @@ static void esp8266Handle_Initial( ESP8266_HandleTypeDef *hpesp8266 )
     #if defined(__DEBUG_LEVEL_2__)
       Debug_LED_Dis(DEBUG_SOURCE_GET_FAILED, RTOS_VER);
     #endif 
+
+    return;
+  }
+}
+
+
+
+/**
+ * @brief 从最新一帧数据中查找 key="value" 形式的值，并复制到 out_val 缓冲区
+ *      
+ */
+bool at_extractString_between_quotes
+( 
+  ESP8266_HandleTypeDef *hpesp8266, 
+  const char* key,
+  char* out_val,
+  uint8_t out_len,
+  BaseType_t mode
+)
+{
+  // 参数检查
+  if (hpesp8266 == NULL || key == NULL || out_val == NULL || out_len == 0) 
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+        printf("Invalid parameter in at_extractString_between_quotes\n");
+    #endif
+    return false;
+  }
+
+  bool result = at_get_string_between_quotes(hpesp8266->LastReceivedFrame.RecvData, 
+                                    hpesp8266->LastReceivedFrame.Data_Len, 
+                                        key, out_val, out_len);
+  
+  if ( result == false )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("Extracts Data Failed of at_extractString_between_quotes in esp8266_driver.c!\n");
+    #endif // __DEBUG_LEVEL_1__
+
+    return false;
+  }
+
+  if ( mode == pdTRUE )
+  {
+    hpesp8266->LastFrameValid = LastRecvFrame_Used;
+
+    return true;
+  }
+
+  return true;
+}
+
+
+/**
+ * @brief      手动清空 ESP8266 接收数据队列
+ * @details    该函数用于在初始化或状态重置前，清除接收队列中残留的无效数据帧
+ *             （如模块上电时输出的乱码、旧响应等）.通过递归互斥量保护操作,
+ *             防止并发访问。若首次获取互斥量失败,会延迟重试一次.
+ *             
+ *             常用于：
+ *              - 模块复位后清理脏数据.
+ *              - 初始化开始前丢弃启动日志.
+ *              - 避免历史数据干扰新流程.
+ *
+ * @return     pdTRUE 成功完成清空操作.
+ * @return     pdFALSE 获取互斥量超时且重试仍失败.
+ *
+ * @note       调用此函数前应确保 UART DMA 接收已启动，否则无数据可清.
+ * @warning    不要从中断上下文调用！本函数可能触发任务调度（vTaskDelay）.
+ */
+static BaseType_t esp8266_ClearRecvQueue_Manual( void )
+{
+  EspRecvMsg_t dummy;
+
+  if ( xSemaphoreTakeRecursive(xMutexEsp, portMAX_DELAY) == pdPASS )
+  {
+Clear:    // 持续从队列中取出数据直到为空
+    while( xQueueReceive(hesp8266.xRecvQueue, &dummy, 0) == pdTRUE )
+    {
+      UNUSED(dummy);
+    }
+
+    xSemaphoreGiveRecursive(xMutexEsp);
+  }
+  else 
+  {
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    // 再次尝试获取锁.
+    if ( xSemaphoreTakeRecursive(xMutexEsp, portMAX_DELAY) != pdPASS )
+      goto Clear;
+
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("Cant get Mutex inside the ClearRecvQueue_Manual in esp8266_driver.c.\n");
+    #endif 
+
+    #if defined(__DEBUG_LEVEL_2__)
+      Debug_LED_Dis(DEBUG_SOURCE_GET_FAILED, RTOS_VER);
+    #endif
+
+    return pdFALSE;
+  }
+
+  return pdTRUE;
+}
+
+
+static void FlushRecvQueue( void )
+{
+  uint8_t errorFlag = 0;
+
+  uint8_t tmp;
+
+  BaseType_t err = esp8266_ClearRecvQueue_Manual();
+  if ( err == pdFALSE )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("Error Clear RecvBuff! Start Retry.\n");
+    #endif // __DEBUG_LEVEL_1__
+
+    errorFlag = 1;
+  }
+  if ( errorFlag )
+  {
+    for(uint8_t j = 0; j < 3; j++)
+    {
+      err = esp8266_ClearRecvQueue_Manual();
+
+      if ( err == pdTRUE )
+      {
+        break;
+      }
+
+      // 延时重试.
+      vTaskDelay(pdMS_TO_TICKS(500));
+      #if defined(__DEBUG_LEVEL_1__)
+        printf("Retry Count: %d", j);
+      #endif
+    }
+
+    // 再清硬件缓冲区（防残留）
+    while (__HAL_UART_GET_FLAG(&esp8266_huart, UART_FLAG_RXNE))
+    {
+        tmp = esp8266_huart.Instance->DR & 0xFF;
+    }
+    HAL_Delay(10); // 稳定一下
+    // 无论是否成功都必须接着往下执行.
+
   }
 }
