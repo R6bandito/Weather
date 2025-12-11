@@ -15,7 +15,6 @@ Objects/
 *.d
 *.axf
 *.lnp
-*.sct
 *.tra
 *.iex
 *.htm

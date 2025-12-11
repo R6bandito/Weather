@@ -13,6 +13,7 @@
 #include <assert.h>
 #include "queue.h"
 #include "at_parser.h"
+#include "flash_log.h"
 
 /* ********************************************** */
 #define WIFI_SSID           "esptest"

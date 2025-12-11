@@ -362,7 +362,7 @@
             </VariousControls>
           </Aads>
           <LDads>
-            <umfTarg>1</umfTarg>
+            <umfTarg>0</umfTarg>
             <Ropi>0</Ropi>
             <Rwpi>0</Rwpi>
             <noStLib>0</noStLib>
@@ -371,7 +371,7 @@
             <TextAddressRange>0x08000000</TextAddressRange>
             <DataAddressRange>0x20000000</DataAddressRange>
             <pXoBase></pXoBase>
-            <ScatterFile></ScatterFile>
+            <ScatterFile>.\proj.sct</ScatterFile>
             <IncludeLibs></IncludeLibs>
             <IncludeLibsPath></IncludeLibsPath>
             <Misc></Misc>
@@ -493,6 +493,16 @@
               <FileName>at_parser.h</FileName>
               <FileType>5</FileType>
               <FilePath>.\Drivers\BSP\at_parser.h</FilePath>
+            </File>
+            <File>
+              <FileName>flash_log.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\Drivers\BSP\flash_log.c</FilePath>
+            </File>
+            <File>
+              <FileName>flash_log.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\Drivers\BSP\flash_log.h</FilePath>
             </File>
           </Files>
         </Group>

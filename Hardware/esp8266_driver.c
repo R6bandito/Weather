@@ -196,13 +196,12 @@ Free:
             void *pResponse = esp8266_WaitResponse("+CIPSTA:", 5000);
             if ( pResponse != NULL )
             {
-              //esp8266_DropLastFrame();
               // 成功获取到IP信息.
               printf("Got IP Address Information\n");
 
               at_extractString_between_quotes(&hesp8266, "+CIPSTA:ip", hesp8266.Wifi_Ipv4, WIFI_IPV4_LENGTH, pdTRUE);
 
-              esp8266_SendAT("%s", hesp8266.Wifi_Ipv4);
+              printf("Ipv4: %s", hesp8266.Wifi_Ipv4);
 
               currentState = INIT_STATE_COMPLETE;
               hesp8266.RetryCount = 0;
@@ -254,6 +253,17 @@ Free:
 
   if ( currentState == INIT_STATE_COMPLETE )
   {
+    Log_Flash_ClearLogMes();
+
+    LogType_t logEvent_a = { .level = LOG_INFO, .message = "ESP8266,Init OK.", .taskName = "vtask8266_Init", .timeStamp = xTaskGetTickCount()};
+
+    Log_Flash_Write(&logEvent_a);
+
+    LogType_t logEvent_b = { .level = LOG_INFO, .message = "ESP8266 start running.", .taskName = "vtask8266_run", .timeStamp = xTaskGetTickCount()};
+
+    Log_Flash_Write(&logEvent_b);
+
+
     for( ; ; );
   }
 
