@@ -36,7 +36,6 @@ TaskHandle_t xCurrentSendTaskHandle = NULL;
 
 /* ********************************************** */
 bool UART4_Init( void );
-static void Wifi_Connect( void );
 static uint32_t usart_timeout_Calculate( uint16_t data_len );
 static void esp8266Handle_Initial( ESP8266_HandleTypeDef *hpesp8266 );
 static BaseType_t esp8266_ClearRecvQueue_Manual( void );
@@ -253,16 +252,33 @@ Free:
 
   if ( currentState == INIT_STATE_COMPLETE )
   {
-    Log_Flash_ClearLogMes();
+    const LogStatus_t* log_status = Log_GetStatus();
 
-    LogType_t logEvent_a = { .level = LOG_INFO, .message = "ESP8266,Init OK.", .taskName = "vtask8266_Init", .timeStamp = xTaskGetTickCount()};
+    uint32_t addr;
 
-    Log_Flash_Write(&logEvent_a);
+    Log_Flash_Init();
 
-    LogType_t logEvent_b = { .level = LOG_INFO, .message = "ESP8266 start running.", .taskName = "vtask8266_run", .timeStamp = xTaskGetTickCount()};
+    Log_UpdateStatus();
 
-    Log_Flash_Write(&logEvent_b);
+    LogType_t buffer[3] = 0;
+    uint16_t count = Log_ReadLatest(3, buffer, 3);
 
+    printf("\nCount: %d\n", count);
+    printf("First message: %s\n", buffer[0].message);
+    printf("Seconed message: %s\n", buffer[1].message);
+    printf("Third message: %s\n", buffer[2].message);
+
+    printf("The LogNum: %d\n", log_status->logNum);
+    printf("The FreeBytes: %d\n", log_status->free_bytes);
+    printf("The UsedBytes: %d\n", log_status->used_bytes);
+    printf("The Remain_LogNum: %d\n", log_status->remain_logNum);
+    printf("The Utilization Rate: %.1f\%\n", log_status->utilization_rate);
+    printf("Is FULL:  %s\n", log_status->is_full ? "true" : "false");
+
+    LogType_t logData;
+
+    Log_GetAtIndex(1, &logData);
+    printf("GetAtIndex 2: %s , timestampe: %ld\n", logData.message, logData.timeStamp);
 
     for( ; ; );
   }

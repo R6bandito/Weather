@@ -3,6 +3,9 @@
 
 #include "stm32f4xx_hal.h"
 #include "bsp_usart_debug.h"
+#include "FreeRTOS.h"
+#include "task.h"
+#include "semphr.h"
 #include <stdbool.h>
 #include <assert.h>
 
@@ -19,6 +22,11 @@
 #define LOG_VALID_MAGIC_FLAG      ( 0xA5A5A5A5UL )
 #define __LOG__FLASH__ALIGNMENT   ( 4 )
 
+#define LOG_IS_FULL_PERCENT       ( 0x5F ) // 95
+#define LOG_MUTEX_BLOCK_TIME      ( 50UL )
+#define MAX_LOG_NUM               ( 900UL )
+#define FLASH_LOG_RETRY_COUNT     ( 3UL )
+#define DEFAULT_READNUM           ( 4UL )
 
 /**
  * @brief   日志级别枚举类型
@@ -63,9 +71,36 @@ STATIC_ASSERT((sizeof(LogType_t) % 4) == 0, log_struct_not_4byte_aligned);
 
 
 
+/**
+ * @brief   Flash 日志系统运行状态信息结构体
+ *
+ *          该结构体用于对外暴露日志模块的当前使用状态，
+ *          可供上层任务（如命令行接口、GUI 监控、自检程序）查询使用。
+ */
+typedef struct
+{
+  uint16_t logNum;            // 当前已存储的有效日志条目总数.
+  uint32_t used_bytes;        // 已使用的 Flash 存储空间（字节）.
+  uint32_t free_bytes;        // 剩余可用的存储空间（字节）.
+  uint16_t remain_logNum;     // 还剩下多少多少条日志可以写入.
+  uint8_t utilization_rate;   // 使用率百分比.
+  bool is_full;               // 日志区域是否已满.
+} LogStatus_t;
+
+
+
+
 
 /*  ******************************************   */
 bool Log_Flash_Write( const LogType_t *log_event );
+
+bool Log_GetAtIndex( uint16_t index, LogType_t *Log_WhetherSucceededToBeAcquired );
+
+bool Log_GetLatestN( uint16_t n, uint32_t *flash_addr );
+
+const LogStatus_t* Log_GetStatus( void );
+
+void Log_UpdateStatus( void );
 
 void Log_Flash_ClearLogMes( void );
 
@@ -74,6 +109,8 @@ void Log_Flash_Init( void );
 void Log_Enable( void );
 
 void Log_Disable( void );
+
+uint16_t Log_ReadLatest( uint16_t ReadNum, LogType_t *buffer, uint16_t buffer_capacity );
 /*  ******************************************   */
 
 #endif // __FLASH_LOG_H
