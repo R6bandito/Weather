@@ -10,11 +10,11 @@ static uint32_t write_address = ( LOG_FLASH_START_ADDR + OFFSET_ERASEFLAG );
 // 擦除标志(魔数验证)（对外不可见）.
 static uint32_t erase_flag_Addr = LOG_FLASH_START_ADDR;
 
-// 全局日志系统开关变量(默认打开日志).
-uint32_t g_log_enable = LOG_ON;
+// 全局日志系统开关变量(默认关闭日志).
+uint32_t g_log_enable = LOG_OFF;
 
 // 全局维护一个互斥锁.
-SemaphoreHandle_t xMutexLog = NULL;
+static SemaphoreHandle_t xMutexLog = NULL;
 
 
 /*  **********************************   */
@@ -22,16 +22,42 @@ static void Log_Flash_Erase( void );
 bool Log_Flash_Write( const LogType_t *log_event );
 bool Log_GetAtIndex( uint16_t index, LogType_t *Log_WhetherSucceededToBeAcquired );
 bool Log_GetLatestN( uint16_t n, uint32_t *flash_addr );
+bool Log_IsValid( const LogType_t *__log );
+bool Log_SelfTest( void );
 void Log_Flash_Init( void );
 void Log_Flash_ClearLogMes( void );
 void Log_Enable( void );
 void Log_Disable( void );
 void Log_UpdateStatus( void );
+void Log_PanicWrite( const char *taskName, const char *reason );
 const LogStatus_t* Log_GetStatus( void );
 uint16_t Log_ReadLatest( uint16_t ReadNum, LogType_t *buffer, uint16_t buffer_capacity );
+uint16_t Log_GetCount( void );
 /*  **********************************   */
 
 
+
+/**
+ * @brief 启用 Flash 日志系统，完成初始化并进入可写入状态
+ *
+ * @details
+ *   该函数用于启动日志子系统，执行以下关键操作：
+ *   - 设置全局启用标志 `g_log_enable = LOG_ON`
+ *   - 调用 `Log_Flash_Init()` 初始化 Flash 区域（含魔数校验、地址对齐、空闲位置定位）
+ *   - 调用`Log_UpdateStatus()` 扫描 Flash 统计日志数量
+ *
+ * @note
+ *   - 本函数是幂等的：重复调用不会导致重复初始化或异常。
+ *   - 若互斥锁创建失败（`xSemaphoreCreateMutex()` 返回 NULL），日志系统将自动禁用（`g_log_enable = LOG_OFF`），
+ *     并通过调试串口输出错误信息（需定义 `__DEBUG_LEVEL_1__`）。
+ *   - 此函数可在任意上下文（任务/中断）中安全调用，但建议在系统初始化阶段（如 `main()` 或 `app_init()`）首次启用。
+ *
+ * @warning
+ *   - 不应在中断服务程序（ISR）中调用该函数（因内部可能涉及动态内存分配或阻塞型 HAL 操作）。
+ *   - 若 `Log_Flash_Init()` 失败（如 Flash 擦除异常），日志系统将处于未就绪状态，后续写入将被拒绝。
+ *
+ * @see Log_Flash_Init(), Log_Disable(), g_log_enable
+ */
 void Log_Enable( void )
 {
   if ( g_log_enable != LOG_ON )
@@ -54,6 +80,28 @@ void Log_Enable( void )
 }
 
 
+
+
+/**
+ * @brief 禁用 Flash 日志系统，停止所有日志写入行为
+ *
+ * @details
+ *   该函数仅设置全局禁用标志 `g_log_enable = LOG_OFF`，不执行任何 Flash 擦除、内存释放或资源清理操作。
+ *   已存在的日志数据保持完整，`Log_GetStatus()`、`Log_ReadLatest()` 等读取接口仍可正常使用。
+ *   下次调用 `Log_Enable()` 将重新激活系统（无需再次擦除扇区）。
+ *
+ * @note
+ *   - 本函数是轻量级、无副作用的纯状态切换操作，执行时间极短（常数时间）。
+ *   - 是线程安全的：标志位为原子写入（32-bit 对齐变量，在 Cortex-M4 上保证原子性）。
+ *   - 可在任务、中断或系统关机流程中安全调用。
+ *
+ * @warning
+ *   - 禁用后，所有 `Log_Flash_Write()` 和 `LOG_WRITE(...)` 宏调用将立即返回 `false` 并丢弃日志，
+ *     不会触发任何硬件操作或错误报告（除非启用了 `__DEBUG_LEVEL_1__`）。
+ *   - 若需彻底清除日志数据，请显式调用 `Log_Flash_ClearLogMes()`。
+ *
+ * @see Log_Enable(), g_log_enable, Log_Flash_ClearLogMes()
+ */
 void Log_Disable( void )
 {
   if ( g_log_enable != LOG_OFF )
@@ -294,6 +342,13 @@ void Log_Flash_ClearLogMes( void )
  */
 bool Log_Flash_Write( const LogType_t *log_event )
 {
+  __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP);
+  __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_OPERR);
+  __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_PGAERR);
+  __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_PGPERR);
+  __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_PGSERR);
+  __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_WRPERR);
+
   if ( g_log_enable == LOG_OFF ) 
   {
     #if defined(__DEBUG_LEVEL_1__)
@@ -360,7 +415,7 @@ bool Log_Flash_Write( const LogType_t *log_event )
 
     return false;
   }
-  status = HAL_BUSY;
+  //status = HAL_BUSY;
 
   // 以 Word 为单位进行写入.
   const uint32_t *data = (const uint32_t *)log_event;
@@ -684,8 +739,39 @@ Retry_Log_GetLatestN:
 
 
 
-
-
+/**
+ * @brief  从 Flash 日志区读取最新的若干条日志记录（最新日志在前）
+ *
+ *         该函数按时间倒序（最新日志优先）从 Flash 中读取指定数量的日志条目，
+ *         并拷贝到用户提供的缓冲区中。适用于 UI 显示（如 LVGL 列表）等需要
+ *         快速获取最近日志的场景。
+ *
+ * @param  ReadNum           请求读取的日志条数
+ *                           - 若为 0 或超过当前存储总数，则自动使用 DEFAULT_READNUM
+ * @param  buffer            输出缓冲区，用于存放读取到的日志数据
+ *                           - 必须指向有效内存空间，且容量不小于 ReadNum
+ * @param  buffer_capacity   buffer 缓冲区的最大容量（以 LogType_t 数目计）
+ *
+ * @return uint16_t          实际成功读取并验证有效的日志条数
+ *                           - 返回值 ≤ min(ReadNum, log_status.logNum, buffer_capacity)
+ *                           - 若发生地址错误或魔术字校验失败，会跳过无效条目并返回实际有效数
+ *
+ * @note
+ *   - 函数内部调用 Log_GetLatestN() 定位起始日志位置，依赖全局 log_status 状态
+ *   - 读取后会对每条日志的 valid_flag 进行二次校验（防御性编程）
+ *   - 校验失败的日志会被丢弃（对应 buffer 项清空 valid_flag），不影响其他条目
+ *   - 推荐 buffer_capacity >= ReadNum，避免截断
+ *     本函数为性能优化设计，未内置互斥锁。如需线程安全，请外部加锁调用
+ *   - 当返回的实际有效数小于请求读取的日志条数时，使用每条日志必须进行有效数校验.
+ *
+ * @warning
+ *   - buffer 不可为 NULL，否则立即返回 0
+ *   - 本函数未加互斥锁，若与其他写日志任务并发运行，可能存在短暂状态不一致风险；
+ *     建议在低并发或临界区中调用
+ *   - 若 log_status 未及时更新（如写入后未刷新），可能导致读取条数计算错误
+ *
+ * @see    Log_GetLatestN(), Log_UpdateStatus(), DEFAULT_READNUM
+ */
 uint16_t Log_ReadLatest( uint16_t ReadNum, LogType_t *buffer, uint16_t buffer_capacity )
 {
   if ( !buffer )
@@ -725,23 +811,293 @@ uint16_t Log_ReadLatest( uint16_t ReadNum, LogType_t *buffer, uint16_t buffer_ca
 
   uint8_t count = 0;
 
+  uint8_t error = 0;
+
+  uint8_t failed_count = 0;
+
   do 
   {
-    if ( buffer[count].valid_flag == LOG_VALID_MAGIC_FLAG ) 
-    {
- 
-    }
+    if ( buffer[count].valid_flag == LOG_VALID_MAGIC_FLAG ) {   }
     else 
     {
-      return 0;
+      buffer[count].valid_flag = 0x00;
+
+      failed_count++;
+
+      error = 1;
     }
 
     count++;
   } while( count < ReadNum );
+
+  if ( error )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+     printf("In Log_ReadLatest(),some logs got wrong MAGIC_FLAG. Has been droped!\n");
+    #endif 
+
+    // 成功读取的日志数.
+    return count - failed_count;
+  }
 
   #if defined(__DEBUG_LEVEL_1__)
     printf("Buffer Verify OK of Log_ReadLatest!\n");
   #endif 
 
   return ReadNum;
+}
+
+
+
+/**
+ * @brief  检查指定日志条目是否有效
+ * 
+ *         通过验证日志结构体中的 valid_flag 是否等于预设魔数，
+ *         判断该日志是否为已成功写入的有效记录。
+ * 
+ * @param  __log  指向待检查的日志条目的指针
+ * @return bool   有效返回 true，无效或指针为空返回 false
+ */
+bool Log_IsValid( const LogType_t *__log )
+{
+  if ( !__log )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("Wrong Param of Log_IsValid.\n");
+    #endif    
+
+    return false;
+  } 
+
+  if ( __log -> valid_flag == LOG_VALID_MAGIC_FLAG )
+  {
+    return true;
+  }
+  else 
+  {
+    return false;
+  }
+}
+
+
+
+/**
+ * @brief   获取当前已存储的有效日志条目总数
+ *
+ *          该函数返回 Flash 日志区中已被成功写入且标记为有效的日志数量。
+ *          数值来源于内部维护的 log_status 结构体，通过互斥锁保护访问，
+ *          确保多任务环境下的数据一致性。
+ *
+ * @return  uint16_t 当前有效日志条数
+ *                  - 若日志系统未启用或无日志，返回 0
+ *                  - 最大值受 MAX_LOG_NUM 和 Flash 容量限制
+ *
+ * @note    此函数是线程安全的，内部使用 xMutexLog 保证原子读取。
+ *          推荐用于 UI 显示日志总数、分页计算等场景。
+ *
+ * @warning 
+ *          - 返回值为调用时刻的快照，后续其他任务写入/清除日志会改变实际数量；
+ *          - 不要依赖此数值进行长时间逻辑判断，建议“获取 → 使用”紧邻操作。
+ *
+ * @see     Log_GetStatus(), Log_ReadLatest()
+ */
+uint16_t Log_GetCount( void )
+{
+  uint16_t cnt = 0;
+
+  if ( xSemaphoreTake(xMutexLog, LOG_MUTEX_BLOCK_TIME) == pdPASS )
+  {
+    cnt = log_status.logNum;
+
+    xSemaphoreGive(xMutexLog);
+  }
+
+  return cnt;
+}
+
+
+
+/**
+ * @brief   写入一条格式化日志到 Flash 存储系统（内部实现函数）
+ *
+ * @details 该函数是 LOG_WRITE 宏的底层实现，负责构造完整的 LogType_t 日志结构体，
+ *          并将其安全写入预分配的 Flash 区域。支持变长参数格式化消息（printf 风格）。
+ *
+ *          主要执行流程：
+ *          1. 初始化日志结构体（自动清零）
+ *          2. 填充时间戳、日志级别、任务名称
+ *          3. 使用 vsnprintf 安全格式化用户消息（防止缓冲区溢出）
+ *          4. 调用 Log_Flash_Write() 持久化存储
+ *
+ * @param   level       日志严重级别（LOG_DEBUG / LOG_INFO / LOG_WARNING / LOG_ERROR）
+ * @param   taskName    发生日志的任务名（建议 ≤15 字符，自动截断并补 '\0'）
+ * @param   fmt         格式化字符串（如 "Temperature: %d, State: %s"）
+ * @param   ...         可变参数列表（对应 fmt 中的占位符）
+ *
+ * @note
+ *   - 此函数不可直接调用，请使用宏 LOG_WRITE(level, taskName, fmt, ...) 代替
+ *   - 线程安全：内部由 Log_Flash_Write() 使用互斥锁保护，可在多任务中并发调用
+ *   - 异常处理：若日志系统未启用或写入失败，会静默丢弃日志（除非启用了 __DEBUG_LEVEL_1__ 输出警告）
+ *   - 性能提示：频繁调用可能阻塞其他任务，请合理控制日志密度
+ *
+ * @warning
+ *   - 不可在中断服务程序（ISR）中调用（因使用 va_list 和动态内存操作）
+ *   - fmt 格式字符串必须有效，否则可能导致 undefined behavior
+ *   - message 字段最大长度为 44 字节（含结尾 '\0'），超长部分将被截断
+ *
+ * @see     LOG_WRITE(), Log_Flash_Write(), LogType_t
+ */
+void _log_write_impl(LogLevel_t level, const char* taskName, const char* fmt, ...)
+{
+    LogType_t log;
+    memset(&log, 0, sizeof(log));
+    log.level = level;
+    log.timeStamp = xTaskGetTickCount();
+    strncpy(log.taskName, taskName, sizeof(log.taskName) - 1);
+    log.taskName[sizeof(log.taskName) - 1] = '\0';
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(log.message, sizeof(log.message), fmt, args);
+    va_end(args);
+    Log_Flash_Write(&log);
+}
+
+
+
+/**
+ * @brief   执行日志系统的自检测试，验证写入与读取功能是否正常工作
+ *
+ * @details 该函数用于检测 Flash 日志系统的基本功能完整性，执行以下步骤：
+ *          1. 检查日志系统是否已启用（g_log_enable == LOG_ON）
+ *          2. 使用 LOG_WRITE 宏写入一条标记为 "TEST" 的日志条目
+ *          3. 短暂延时以确保写入完成（尤其在高负载系统中）
+ *          4. 调用 Log_GetAtIndex 读取最新一条日志（索引为 logNum - 1）
+ *          5. 验证读出的日志任务名为 "TEST" 且有效标志位正确
+ *
+ * @note
+ *   - 本测试依赖外部 API：Log_GetCount()、Log_GetAtIndex() 和 LOG_WRITE()
+ *   - 需要 FreeRTOS 的 vTaskDelay 支持以提供上下文切换机会
+ *   - 建议在系统初始化后或故障诊断时调用此函数
+ *   - 测试成功仅表示基本读写链路通畅，不验证 Flash 寿命或断电恢复能力
+ *
+ * @warning
+ *   - 不可在中断上下文中调用（因使用了 vTaskDelay 和可变参数宏）
+ *   - 若与其他任务并发大量写日志，可能导致测试误判（建议在低负载时运行）
+ *
+ * @return bool 自检结果：全部验证通过返回 true；任一环节失败返回 false
+ */
+bool Log_SelfTest( void )
+{
+  if ( g_log_enable == LOG_OFF )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("Log System SelfTest Failed.(LOG_FLAG Off)\n");
+    #endif 
+
+    return false;
+  }
+
+  LOG_WRITE(LOG_INFO, "TEST", "Log Self Test.\n");
+
+  vTaskDelay(pdMS_TO_TICKS(5));
+
+  LogType_t test_log;
+
+  if ( Log_GetAtIndex(Log_GetCount() - 1, &test_log) )
+  {
+    if ( !strcmp(test_log.taskName, "TEST") && test_log.valid_flag == LOG_VALID_MAGIC_FLAG )
+    {
+      return true;
+    }
+    else 
+    {
+      return false;
+    }
+  }
+  else 
+  {
+    return false;
+  }
+}
+
+
+
+
+/**
+ * @brief   写入一条紧急日志到备份内存（Panic Log），用于记录致命系统错误
+ *
+ * @details 该函数专为不可恢复的严重故障场景设计（如栈溢出、HardFault 等），
+ *          将关键诊断信息写入 Backup SRAM 区域（地址: LOG_PANIC_ADDR）。  
+ *          即使系统随后复位，只要 VBAT 供电正常，该日志仍可被保留，供下次启动时读取分析。
+ *
+ *          记录内容包括：
+ *          - 错误原因字符串（reason）
+ *          - 发生任务名称（taskName，若为空则标记为 "Unknown"）
+ *          - 时间戳（HAL_GetTick）
+ *          - 日志级别（固定为 LOG_ERROR）
+ *          - 魔数标志（LOG_PANIC_MAGIC），用于有效性校验
+ *
+ * @note
+ *   - 此函数假设调用环境已关闭调度器与中断（如 vApplicationStackOverflowHook 中），
+ *     因此内部不再进行任何临界区保护操作。
+ *   - 不依赖动态内存、标准库格式化函数（如 snprintf）或复杂 API，确保在损坏环境中仍能执行。
+ *   - 若 reason 为 NULL，则函数直接返回，不进行任何写入操作。
+ *   - taskName 可为 NULL，此时将记录为 "Unknown"。
+ *
+ * @warning
+ *   - 必须确保 BKPSRAM 已正确初始化并启用时钟（__HAL_RCC_BKPSRAM_CLK_ENABLE()）；
+ *     否则写入无效。
+ *   - 若设备无 VBAT 供电，掉电后本日志将丢失。
+ *   - 不可在普通运行路径中滥用此接口（仅限 fatal error 场景）。
+ *
+ * @param   taskName    出错的任务名（建议 ASCII 字符串，最长 15 字符 + '\0'）
+ * @param   reason      错误原因描述字符串（必须非空，否则函数返回）
+ *
+ * @see     vApplicationStackOverflowHook, HardFault_Handler, LOG_PANIC_ADDR, LOG_PANIC_MAGIC
+ */
+void Log_PanicWrite( const char *taskName, const char *reason )
+{
+  uint8_t count = 0;
+
+  uint8_t Param_isValid = 1;
+
+  if ( !taskName )
+  {
+    Param_isValid = 0;
+  }
+
+  // 必须要写明原因. 否则直接返回.
+  if ( !reason )
+  {
+    return;
+  }
+
+  LogType_t *__panic_log = (LogType_t *)LOG_PANIC_ADDR;
+  memset((LogType_t *)LOG_PANIC_ADDR, 0, sizeof(LogType_t));
+  __panic_log->valid_flag = LOG_PANIC_MAGIC;
+  __panic_log->level = LOG_ERROR;
+  __panic_log->timeStamp = HAL_GetTick();
+
+  if ( Param_isValid )
+  {
+    uint8_t j = 0;
+
+    for( j; j < 16 && taskName[j]; j++ )
+    {
+      __panic_log->taskName[j] = taskName[j];
+    }
+    __panic_log->taskName[j] = '\0';
+  }
+  else 
+  {
+    strcpy(__panic_log->taskName, "Unknown");
+  }
+
+  uint8_t len = 0;
+
+  while (len < sizeof(__panic_log->message) - 1 && reason[len]) {
+      __panic_log->message[len] = reason[len];
+      len++;
+  }
+  __panic_log->message[len] = '\0';
 }

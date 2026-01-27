@@ -8,6 +8,7 @@
 #include "hal_timebase.h"
 #include "task_Exam.h"
 #include "esp8266_driver.h"
+#include "flash_log.h"
 
 
 

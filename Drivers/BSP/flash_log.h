@@ -6,8 +6,10 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "semphr.h"
+#include <stdio.h>
 #include <stdbool.h>
 #include <assert.h>
+#include <stdarg.h>
 
 
 #define LOG_ON                    ( 0x5AA55AA5UL )
@@ -20,6 +22,8 @@
 #define OFFSET_ERASEFLAG          ( 4 )
 #define ERASE_FLAG_MAGIC_WORD     ( 0x5A5A5A5AUL )
 #define LOG_VALID_MAGIC_FLAG      ( 0xA5A5A5A5UL )
+#define LOG_PANIC_MAGIC           ( 0xCAFEBABEUL )
+#define LOG_PANIC_ADDR            ( BKPSRAM_BASE )
 #define __LOG__FLASH__ALIGNMENT   ( 4 )
 
 #define LOG_IS_FULL_PERCENT       ( 0x5F ) // 95
@@ -27,6 +31,10 @@
 #define MAX_LOG_NUM               ( 900UL )
 #define FLASH_LOG_RETRY_COUNT     ( 3UL )
 #define DEFAULT_READNUM           ( 4UL )
+
+
+
+
 
 /**
  * @brief   日志级别枚举类型
@@ -42,7 +50,6 @@ typedef enum
   LOG_INFO,
   LOG_WARNING,
   LOG_ERROR
-
 } LogLevel_t;
 
 
@@ -72,6 +79,49 @@ STATIC_ASSERT((sizeof(LogType_t) % 4) == 0, log_struct_not_4byte_aligned);
 
 
 /**
+ * @brief   向 Flash 日志系统写入一条格式化日志（推荐使用的日志接口宏）
+ *
+ * @details 该宏用于在代码中便捷地记录带时间戳、任务名和格式化消息的日志条目，
+ *          并将其持久化存储至 Flash。它是 _log_write_impl() 函数的安全封装。
+ *
+ *          使用示例：
+ *          ~~~c
+ *          LOG_WRITE(LOG_INFO, "MAIN", "System started, version: %s", "v1.0");
+ *          LOG_WRITE(LOG_WARNING, "SENSOR", "Temperature high: %d°C", temp);
+ *          ~~~
+ *
+ * @param   level       日志级别，取值为 LogLevel_t 枚举类型：
+ *                      - LOG_DEBUG     调试信息（最低级别）
+ *                      - LOG_INFO      普通运行信息
+ *                      - LOG_WARNING   警告状态（不影响功能）
+ *                      - LOG_ERROR     错误事件（功能异常）
+ *
+ * @param   taskName    字符串字面量或字符指针，表示当前日志来源的任务/模块名称。
+ *                      建议长度 ≤15 字符，自动截断并补 '\0'。
+ *
+ * @param   fmt         格式化字符串，支持标准 printf 风格占位符（如 %d, %s, %f 等）
+ *
+ * @param   ...         可选变参列表，对应于 fmt 中的占位符
+ *
+ * @note
+ *   - 此宏是线程安全的，可在任意任务上下文中调用（但不支持中断 ISR）
+ *   - 若日志系统未启用（Log_Disable()），则宏会静默丢弃日志
+ *   - 内部使用 vsnprintf，确保不会发生缓冲区溢出
+ *   - 支持 Keil/IAR/GCC 编译器（通过 ##__VA_ARGS__ 兼容空变参）
+ *
+ * @warning
+ *   - 不可在中断服务程序（ISR）中调用，因为底层涉及 va_list 和互斥锁操作
+ *   - 过度频繁调用可能影响系统实时性，请合理控制日志密度
+ *   - fmt 参数不能为空或非法指针，否则行为未定义
+ *
+ * @see     _log_write_impl(), Log_Flash_Write(), LogLevel_t, LogType_t
+ */
+#define LOG_WRITE(level, taskName, fmt, ...) \
+    _log_write_impl((level), (taskName), (fmt), ##__VA_ARGS__)
+
+
+
+/**
  * @brief   Flash 日志系统运行状态信息结构体
  *
  *          该结构体用于对外暴露日志模块的当前使用状态，
@@ -92,11 +142,17 @@ typedef struct
 
 
 /*  ******************************************   */
+void _log_write_impl(LogLevel_t level, const char* taskName, const char* fmt, ...);
+
 bool Log_Flash_Write( const LogType_t *log_event );
 
 bool Log_GetAtIndex( uint16_t index, LogType_t *Log_WhetherSucceededToBeAcquired );
 
 bool Log_GetLatestN( uint16_t n, uint32_t *flash_addr );
+
+bool Log_IsValid( const LogType_t *__log );
+
+bool Log_SelfTest( void );
 
 const LogStatus_t* Log_GetStatus( void );
 
@@ -110,7 +166,11 @@ void Log_Enable( void );
 
 void Log_Disable( void );
 
+void Log_PanicWrite( const char *taskName, const char *reason );
+
 uint16_t Log_ReadLatest( uint16_t ReadNum, LogType_t *buffer, uint16_t buffer_capacity );
+
+uint16_t Log_GetCount( void );
 /*  ******************************************   */
 
 #endif // __FLASH_LOG_H

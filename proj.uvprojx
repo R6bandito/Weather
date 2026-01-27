@@ -609,6 +609,26 @@
               <FileType>5</FileType>
               <FilePath>.\Drivers\HAL\Inc\stm32f4xx_hal_tim_ex.h</FilePath>
             </File>
+            <File>
+              <FileName>stm32f4xx_hal_rtc.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\Drivers\HAL\Inc\stm32f4xx_hal_rtc.h</FilePath>
+            </File>
+            <File>
+              <FileName>stm32f4xx_hal_rtc_ex.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\Drivers\HAL\Inc\stm32f4xx_hal_rtc_ex.h</FilePath>
+            </File>
+            <File>
+              <FileName>stm32f4xx_hal_pwr.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\Drivers\HAL\Inc\stm32f4xx_hal_pwr.h</FilePath>
+            </File>
+            <File>
+              <FileName>stm32f4xx_hal_pwr_ex.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\Drivers\HAL\Inc\stm32f4xx_hal_pwr_ex.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
@@ -703,6 +723,26 @@
               <FileName>stm32f4xx_hal_tim_ex.c</FileName>
               <FileType>1</FileType>
               <FilePath>.\Drivers\HAL\Src\stm32f4xx_hal_tim_ex.c</FilePath>
+            </File>
+            <File>
+              <FileName>stm32f4xx_hal_rtc.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\Drivers\HAL\Src\stm32f4xx_hal_rtc.c</FilePath>
+            </File>
+            <File>
+              <FileName>stm32f4xx_hal_rtc_ex.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\Drivers\HAL\Src\stm32f4xx_hal_rtc_ex.c</FilePath>
+            </File>
+            <File>
+              <FileName>stm32f4xx_hal_pwr.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\Drivers\HAL\Src\stm32f4xx_hal_pwr.c</FilePath>
+            </File>
+            <File>
+              <FileName>stm32f4xx_hal_pwr_ex.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\Drivers\HAL\Src\stm32f4xx_hal_pwr_ex.c</FilePath>
             </File>
           </Files>
         </Group>

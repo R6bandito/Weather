@@ -5,6 +5,19 @@ int main( void )
 {
 	HAL_Init();
 
+	Log_Enable();
+
+	// 开启对BKPSRAM的访问.
+	{
+		__HAL_RCC_PWR_CLK_ENABLE();
+
+		__HAL_RCC_BKPSRAM_CLK_ENABLE();
+
+		HAL_PWR_EnableBkUpAccess();
+
+		HAL_PWR_EnableBkUpReg();
+	}
+
 #if defined(__DEBUG_LEVEL_2__)
 	Debug_Led_Init();
 #endif // __DEBUG_LEVEL_2__

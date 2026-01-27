@@ -19,6 +19,10 @@ SemaphoreHandle_t vMutex_Debug;
   void Debug_LED_Dis( DebugLedState_t State, DebugLEDEnvMode_t Mode );
 
   static void Debug_LED_State_WRONG_PARAM_Failed( DebugLEDEnvMode_t Mode );
+
+  static void Debug_fputChar_direct( char ch );
+
+  void debug_puts_direct( const char *str );
 #endif // __DEBUG_LEVEL_2__
 
 
@@ -114,6 +118,42 @@ SemaphoreHandle_t vMutex_Debug;
 
     return SUCCESS;
   }
+
+
+
+  /**
+  * @brief  直接发送一个字符到USART（轮询方式，不依赖RTOS）
+  * @note   用于中断或系统异常等临界场景，确保最小依赖
+  */
+  static void Debug_fputChar_direct( char ch )
+  {
+    while( !__HAL_USART_GET_FLAG(&husart3, USART_FLAG_TXE) );
+
+    husart3.Instance -> DR = (uint8_t)ch;
+
+    while( !__HAL_USART_GET_FLAG(&husart3, USART_FLAG_TC) );
+  }
+
+  
+
+  /**
+  * @brief  直接输出字符串（线程不安全，用于panic等紧急情况）
+  * @param  str: 要输出的字符串指针
+  * @note   不使用信号量或动态内存，适合栈溢出/关中断时调用
+  */
+  void debug_puts_direct( const char *str )
+  {
+    if ( !str )
+    {
+      return;
+    } 
+
+    while(*str)
+    {
+      Debug_fputChar_direct(*str++);
+    }
+  }
+
 #endif // __DEBUG_LEVEL_1__
 
 
@@ -433,6 +473,54 @@ SemaphoreHandle_t vMutex_Debug;
   }
 
 
+  /**
+   * @brief  LED 调式状态指示:  堆栈溢出 (四长).
+   * @param  Mode:  指示调用位置的工作环境. 
+   *        可以为以下参数: 
+   *              COMN_VER  裸机环境(RTOS未启动).
+   *              RTOS_VER  实时操作系统环境下.
+   *                
+   * @note  NULL.
+   *         
+ */
+  static void Debug_LED_State_STACKOVFL_Failed( DebugLEDEnvMode_t Mode )
+  {
+    if ( Mode == COMN_VER )
+    {
+      for( ; ; )
+      {
+        for( uint8_t j = 0; j < 4; j++ )
+        {
+          Debug_LED_On();
+
+          HAL_Delay(DEBUG_LED_STATE_LONG);
+
+          Debug_LED_Off();
+
+          HAL_Delay(DEBUG_LED_STATE_LONG);
+        }
+      }
+    }
+
+    if ( Mode == RTOS_VER )
+    {
+      for( ; ; )
+      {
+        for( uint8_t j = 0; j < 4; j++ )
+        {
+          Debug_LED_On();
+
+          vTaskDelay(pdMS_TO_TICKS(DEBUG_LED_STATE_LONG));
+
+          Debug_LED_Off();
+
+          vTaskDelay(pdMS_TO_TICKS(DEBUG_LED_STATE_LONG));
+        }
+      }
+    }
+  }
+
+
 
   void Debug_LED_Dis( DebugLedState_t State, DebugLEDEnvMode_t Mode )
   {
@@ -452,6 +540,10 @@ SemaphoreHandle_t vMutex_Debug;
 
     case DEBUG_WRONG_PARAM:
       Debug_LED_State_WRONG_PARAM_Failed( Mode );
+      break;
+
+    case DEBUG_STACK_OVERFLOW:
+      Debug_LED_State_STACKOVFL_Failed( Mode );
       break;
     
     default:

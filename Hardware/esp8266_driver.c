@@ -1,6 +1,5 @@
 #include "esp8266_driver.h"
 
-
 /* Global Ver.*/
 /* ********************************************** */
 ESP8266_HandleTypeDef hesp8266 = { 0 };
@@ -254,36 +253,11 @@ Free:
   {
     const LogStatus_t* log_status = Log_GetStatus();
 
-    uint32_t addr;
-
-    Log_Flash_Init();
-
-    Log_UpdateStatus();
-
-    LogType_t buffer[3] = 0;
-    uint16_t count = Log_ReadLatest(3, buffer, 3);
-
-    printf("\nCount: %d\n", count);
-    printf("First message: %s\n", buffer[0].message);
-    printf("Seconed message: %s\n", buffer[1].message);
-    printf("Third message: %s\n", buffer[2].message);
-
-    printf("The LogNum: %d\n", log_status->logNum);
-    printf("The FreeBytes: %d\n", log_status->free_bytes);
-    printf("The UsedBytes: %d\n", log_status->used_bytes);
-    printf("The Remain_LogNum: %d\n", log_status->remain_logNum);
-    printf("The Utilization Rate: %.1f\%\n", log_status->utilization_rate);
-    printf("Is FULL:  %s\n", log_status->is_full ? "true" : "false");
-
-    LogType_t logData;
-
-    Log_GetAtIndex(1, &logData);
-    printf("GetAtIndex 2: %s , timestampe: %ld\n", logData.message, logData.timeStamp);
+    Log_Flash_ClearLogMes();
 
     for( ; ; );
   }
-
-
+  
   /*    TEST     */
 }
 

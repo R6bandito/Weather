@@ -52,7 +52,9 @@ typedef enum {
 
   DEBUG_HARD_FAULT,
 
-  DEBUG_WRONG_PARAM
+  DEBUG_WRONG_PARAM,
+
+  DEBUG_STACK_OVERFLOW
 
 } DebugLedState_t;
 
@@ -72,6 +74,8 @@ typedef enum {
   #if defined(__DEBUG_LEVEL_1__)
 
     ErrorStatus Debug_USART_Init( void );
+
+    void debug_puts_direct( const char *str );
 
   #endif // __DEBUG_LEVEL_1__
 
