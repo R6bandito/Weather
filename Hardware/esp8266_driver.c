@@ -47,6 +47,7 @@ bool at_extractString_between_quotes
   uint8_t out_len,
   BaseType_t mode
 );
+bool at_extractNum( ESP8266_HandleTypeDef *hpesp8266, const char *key, uint32_t *out_val, BaseType_t mode );
 /* ********************************************** */
 
 
@@ -199,7 +200,7 @@ Free:
 
               at_extractString_between_quotes(&hesp8266, "+CIPSTA:ip", hesp8266.Wifi_Ipv4, WIFI_IPV4_LENGTH, pdTRUE);
 
-              printf("Ipv4: %s", hesp8266.Wifi_Ipv4);
+              printf("Ipv4: %s\n", hesp8266.Wifi_Ipv4);
 
               currentState = INIT_STATE_COMPLETE;
               hesp8266.RetryCount = 0;
@@ -253,7 +254,7 @@ Free:
   {
     const LogStatus_t* log_status = Log_GetStatus();
 
-    Log_Flash_ClearLogMes();
+    esp8266_tcp_Init();
 
     for( ; ; );
   }
@@ -262,8 +263,38 @@ Free:
 }
 
 
+
+
 /**
- * @brief 在数据块中搜索子串.
+ * @brief 在指定长度的内存块中查找子串（无 null-terminator 依赖的 `memmem` 实现）
+ *
+ * 本函数是标准 `memmem()` 的轻量级嵌入式替代实现，专为 ESP8266 AT 响应解析设计：
+ * 它不依赖 `\0` 结尾，仅基于显式长度进行安全搜索，避免因未终止字符串导致的越界访问。
+ * 典型用于在 `LastReceivedFrame.RecvData` 中查找 `"OK"`, `"+IPD:"`, `"\"value\"` 等固定模式。
+ *
+ * @note
+ *   - 搜索范围严格限定在 `[haystack, haystack + stack_len)` 内，**绝不越界读取**；
+ *   - 若 `need_str_len == 0`，视为“空模式”，直接返回 `haystack`（POSIX 兼容行为）；
+ *   - 若 `stack_len < need_str_len`，循环条件 `j <= stack_len - need_str_len` 自动失效，立即返回 `NULL`；
+ *   - 使用朴素暴力算法（O(n×m)），适用于短响应帧（典型 `< 512B`），无额外内存开销；
+ *   - 所有调试输出受 `__DEBUG_LEVEL_1__/2__` 控制，不影响 Release 构建；
+ *   - **非线程安全**：调用者需确保 `haystack` / `need_str` 在搜索期间不被其他任务/中断修改。
+ *
+ * @param[in] haystack     待搜索的内存块起始地址（可为任意 `uint8_t*` 数据，如 UART 接收缓冲区）
+ * @param[in] stack_len    `haystack` 的有效字节数（必须为 `uint16_t`，适配 ESP8266 帧长度）
+ * @param[in] need_str     要查找的子串起始地址（可为 `char*` 或 `const void*`）
+ * @param[in] need_str_len `need_str` 的字节数（必须为 `uint16_t`，支持二进制数据匹配）
+ *
+ * @retval non-NULL  指向 `haystack` 中首次匹配位置的指针（即 `&haystack[j]`）
+ * @retval NULL      未找到匹配，或输入参数非法（`haystack==NULL` 或 `need_str==NULL`）
+ *
+ * @warning
+ *   - 此函数**不验证 `need_str` 是否在合法内存区域** —— 若 `need_str` 指向非法地址，`needle[i]` 访问将触发 HardFault；
+ *   - `stack_len` 和 `need_str_len` 均为 `uint16_t`，最大支持 64KB 搜索，但实际 AT 帧极少超过 1KB；
+ *   - 该实现**不兼容 POSIX `memmem()` 的 `size_t` 参数类型**，但语义完全一致（返回匹配首地址）；
+ *   - 在中断上下文调用时，需确保 `haystack` 缓冲区已由上层加锁保护（如 `xMutexEsp`），否则存在竞态风险。
+ *
+ * @see at_get_string_between_quotes(), esp8266_WaitResponse(), memchr()
  */
 void*  memmem( 
                       const uint8_t *haystack, uint16_t stack_len, 
@@ -316,18 +347,47 @@ void*  memmem(
 
 
 
+
 /**
-   * @brief  ESP8266 AT命令发送
-   * @param  const char* format, ... : 格式化字符串.
-   *          
-   * @note  
-   *         
+ * @brief 同步发送格式化 AT 命令至 ESP8266 模块（基于 DMA + 任务通知机制）
+ *
+ * 使用 HAL_UART_Transmit_DMA 异步发送 AT 命令，并通过 FreeRTOS 任务通知（Task Notification）
+ * 等待发送完成或超时。该函数是 ESP8266 驱动层最核心的命令下发接口。
+ *
+ * @note
+ *   - 命令字符串经 `vsnprintf()` 安全格式化到全局缓冲区 `esp8266_TxBuffer`，
+ *     并自动追加 `\r\n` 结尾（符合 AT 协议规范），末尾显式置 `\0`；
+ *   - 发送长度上限为 `Tx_DATA_BUFFER - 3`（预留 `\r`, `\n`, `\0` 空间），超长或格式化失败立即返回 `false`；
+ *   - 使用递归互斥量 `xMutexEsp` 保护临界区（防止多任务并发发送），获取超时 500ms；
+ *   - 成功启动 DMA 后，将当前任务句柄存入 `xCurrentSendTaskHandle`，供 UART TX 完成中断回调使用；
+ *   - 调用 `ulTaskNotifyTake()` 等待发送完成通知，超时则主动调用 `HAL_UART_AbortTransmit()` 终止 DMA；
+ *   - 所有错误路径（互斥量失败、格式化失败、HAL 错误、超时）均会：
+ *       • 清理 `xCurrentSendTaskHandle`；
+ *       • 释放互斥量；
+ *       • 记录对应级别日志（`LOG_DEBUG` 或 `LOG_WARNING`）；
+ *   - **非阻塞但同步语义**：函数返回 `true` 表示 DMA 已成功启动且收到完成通知（即字节已移入硬件 FIFO）；
+ *     返回 `false` 表示发送未完成（失败/超时），上层需重试或报错。
+ *
+ * @param[in] format 格式化字符串（如 `"AT+CWMODE=%d"`, `"AT+CWJAP=\"%s\",\"%s\""`），支持标准 printf 语法
+ * @param[in] ...    可变参数列表（与 format 中占位符一一对应）
+ *
+ * @retval true  命令已成功格式化、发送并完成 DMA 传输（硬件 FIFO 已加载完毕）
+ * @retval false 发送失败：互斥量获取超时、缓冲区溢出、`vsnprintf` 错误、HAL_UART 失败、或 DMA 超时
+ *
+ * @warning
+ *   - **严禁在中断服务程序（ISR）中调用** —— `xSemaphoreTakeRecursive()` 和 `ulTaskNotifyTake()` 均不可在 ISR 中使用；
+ *   - `format` 字符串长度 + 所有参数展开后总长 **必须 < Tx_DATA_BUFFER - 3**，否则静默截断并返回 `false`；
+ *   - 若 UART 外设处于异常状态（如 `gState != HAL_UART_STATE_READY`），`HAL_UART_Transmit_DMA()` 可能直接返回 `HAL_ERROR`；
+ *   - 本函数不校验 ESP8266 是否在线或响应能力 —— 它只负责“发出去”，响应处理由 `esp8266_WaitResponse()` 独立承担。
+ *
+ * @see usart_timeout_Calculate(), esp8266_WaitResponse(), HAL_UART_TxCpltCallback()
  */
 bool esp8266_SendAT( const char* format, ... )
 {
   BaseType_t err = xSemaphoreTakeRecursive(xMutexEsp, 500);
   if ( err != pdPASS )
   {
+    LOG_WRITE(LOG_DEBUG, "NULL", "SendAT() get Mutex failed\n");
 
     return false;
   }
@@ -349,7 +409,9 @@ bool esp8266_SendAT( const char* format, ... )
       printf("AT Command Too Long or Format Error!\n");
     #endif
 
-    goto exit;
+    LOG_WRITE(LOG_WARNING, "NULL", "AT Command Too Long or Format Error!\n");
+
+    goto exit; 
   }
 
   if ( len > 0 )
@@ -369,6 +431,8 @@ bool esp8266_SendAT( const char* format, ... )
       #if defined(__DEBUG_LEVEL_1__)
         printf("AT Send Error!\n");
       #endif // __DEBUG_LEVEL_1__
+
+      LOG_WRITE(LOG_WARNING, "NULL", "AT Send Error.\n");
 
       goto exit;
     }
@@ -410,6 +474,44 @@ exit:
 
 
 
+
+/**
+ * @brief 配置 ESP8266 的 Wi-Fi 工作模式（STATION / SOFTAP / STATION+SOFTAP）
+ *
+ * 向 ESP8266 发送 `AT+CWMODE=<mode>` 命令，请求切换其 Wi-Fi 运行模式。
+ * 该函数仅负责**下发配置指令**，不等待或验证模块是否实际切换成功；
+ * 实际模式确认需由调用者后续调用 `esp8266_WaitResponse("OK")` 并结合状态机处理。
+ *
+ * @note
+ *   - 支持的合法模式仅限枚举值：`STATION` (1), `SOFTAP` (2), `STATION_SOFTAP` (3)；
+ *     其他值（如 0、4、负数）均视为非法输入，立即返回 `ESP_WIFI_ERROR`；
+ *   - 使用递归互斥量 `xMutexEsp` 保护 AT 命令发送临界区，防止多任务并发冲突；
+ *   - 命令字符串在栈上构造（`atCommand[32]`），通过 `snprintf` 严格校验长度：
+ *       • `result < 0` → 格式化失败（内部错误）；
+ *       • `result >= sizeof(atCommand)` → 缓冲区溢出风险，拒绝执行；
+ *   - 成功构造后，调用 `esp8266_SendAT()` 异步发送（不阻塞），该函数返回后命令仍在 DMA 传输中；
+ *   - **重要**：本函数返回 `Mode` 仅表示“已成功下发该模式指令”，不代表 ESP8266 当前已处于该模式；
+ *     模块真实状态必须通过 `WaitResponse("OK")` + `AT+CWMODE?` 查询或状态机同步更新。
+ *
+ * @param[in] Mode 目标 Wi-Fi 模式，取值必须为以下之一：
+ *                 - `STATION`: 仅作为 STA 连接路由器（客户端模式）；
+ *                 - `SOFTAP`: 仅作为 AP 提供热点（服务端模式）；
+ *                 - `STATION_SOFTAP`: 同时启用 STA+AP（混合模式）。
+ *
+ * @retval STATION         输入合法且命令已成功下发（非实时生效）
+ * @retval SOFTAP          同上
+ * @retval STATION_SOFTAP  同上
+ * @retval ESP_WIFI_ERROR  输入非法、互斥量获取超时、或命令缓冲区不足
+ *
+ * @warning
+ *   - 此函数**不处理 AT 响应**（如 "OK" 或 "ERROR"），也不修改 `hpesp8266->CurrentMode` 字段；
+ *     状态同步必须由上层状态机（如 `vtask8266_Init`）在收到 `OK` 后显式赋值；
+ *   - 若在中断上下文调用，将导致 `xSemaphoreTakeRecursive()` 永久阻塞 —— **严禁在 ISR 中调用**；
+ *   - `esp8266_SendAT()` 可能因 UART 忙/超时失败，但本函数不捕获该错误（返回值被忽略），
+ *     调用者需自行检查 `WaitResponse()` 结果以判定命令是否真正送达。
+ *
+ * @see esp8266_SendAT(), esp8266_WaitResponse(), vtask8266_Init()
+ */
 EspWifiMode_t esp8266_ConnectModeChange( EspWifiMode_t Mode )
 {
   if  ( 
@@ -425,6 +527,8 @@ EspWifiMode_t esp8266_ConnectModeChange( EspWifiMode_t Mode )
     #if defined(__DEBUG_LEVEL_2__)
       Debug_LED_Dis(DEBUG_WRONG_PARAM, RTOS_VER);
     #endif // __DEBUG_LEVEL_2__
+
+    LOG_WRITE(LOG_DEBUG, "NULL", "esp8266_ConnectModeChange called failed!\n");
 
     return ESP_WIFI_ERROR;
   }
@@ -460,6 +564,37 @@ EspWifiMode_t esp8266_ConnectModeChange( EspWifiMode_t Mode )
 
 
 
+
+/**
+ * @brief 阻塞等待 ESP8266 模块返回包含指定子串的 AT 响应帧
+ *
+ * 本函数从 FreeRTOS 队列 `hesp8266.xRecvQueue` 中接收一帧完整响应数据（`EspRecvMsg_t`），
+ * 并在该帧的 `RecvData[]` 缓冲区中使用 `memmem()` 安全搜索目标字符串 `expected`。
+ * 成功匹配后，立即将 `hesp8266.LastFrameValid` 标记为 `LastRecvFrame_Valid`，防止上层
+ * 多次调用时重复解析同一帧；若超时或未匹配，则返回 NULL。
+ *
+ * @note
+ *   - 调用前必须确保 `hesp8266.LastFrameValid == LastRecvFrame_Used`，否则函数立即返回 NULL；
+ *     此设计强制要求上层在解析完一帧后调用 `esp8266_DropLastFrame()` 主动释放帧所有权；
+ *   - 搜索基于显式长度（`Data_Len`），不依赖 `\0` 终止符，完全兼容二进制响应（如 `+IPD,0,5:Hello`）；
+ *   - 使用 `xSemaphoreTakeRecursive(xMutexEsp, 200)` 保护队列接收临界区，超时 200ms 防死锁；
+ *   - 若 `xQueueReceive()` 超时（即 `xTicksToWait` 耗尽），函数终止并返回 NULL；
+ *   - 所有调试日志受 `__DEBUG_LEVEL_1__` 控制，不影响 Release 构建体积与性能；
+ *   - 本函数**不可在中断上下文（ISR）中调用**（`xSemaphoreTakeRecursive` / `xQueueReceive` 非 ISR-safe）。
+ *
+ * @param[in]  expected     待搜索的目标子串（如 `"OK"`, `"+IPD:"`, `"WIFI GOT IP"`），必须非 NULL 且非空
+ * @param[in]  timeout_ms   总等待超时时间（毫秒），建议：AT 命令响应设 200~500ms；TCP 连接设 5000~15000ms
+ *
+ * @retval non-NULL    指向 `LastReceivedFrame.RecvData` 中首次匹配位置的指针（即 `&RecvData[i]`）
+ * @retval NULL        ① 参数非法；② 上一帧未释放（`LastFrameValid == Valid`）；③ 队列接收超时；④ `memmem` 未找到
+ *
+ * @warning
+ *   - 返回的指针**仅在当前帧生命周期内有效**：一旦调用 `esp8266_DropLastFrame()` 或下一帧覆盖缓冲区，该地址失效；
+ *   - 若需长期持有匹配内容，请立即 `memcpy` 到自有缓冲区；
+ *   - 不检查 `expected` 是否在合法内存区域 —— 若传入非法地址，`memmem()` 将触发 HardFault；
+ *   - 本函数不修改 `LastReceivedFrame.Data_Len` 或 `RecvData[]` 内容，仅读取。
+ *
+ */
 void *esp8266_WaitResponse( const char* expected, uint32_t timeout_ms )
 {
   if ( expected == NULL || strlen(expected) == 0 )
@@ -538,6 +673,38 @@ void *esp8266_WaitResponse( const char* expected, uint32_t timeout_ms )
 
 
 
+
+/**
+ * @brief 初始化 ESP8266 专用 UART4 外设（含 DMA 接收与中断协同机制）
+ *
+ * 配置 UART4 为 ESP8266 通信通道，采用 **HAL_UARTEx_ReceiveToIdle_DMA** 模式实现高效、低功耗的帧接收：
+ * - 利用 UART IDLE 线空闲中断检测一帧数据结束（替代固定长度超时），天然适配变长 AT 响应；
+ * - DMA 自动将接收到的数据流写入 `recv_temp[]` 缓冲区，无需 CPU 干预；
+ * - 启用 `UART_IT_IDLE` 和 `UART_IT_TC` 中断，分别用于帧结束识别和发送完成通知；
+ * - 配置 DMA1_Stream4 服务 UART4_RX，并设置合理中断优先级（DMA: 6 > UART: 5），避免接收丢失。
+ *
+ * @note
+ *   - `HAL_UARTEx_ReceiveToIdle_DMA()` 要求：DMA 缓冲区必须足够容纳单帧最大长度（`RECV_DATA_BUFFER`），
+ *     且在 IDLE 中断触发后，需由 `UART4_IRQHandler` 调用 `HAL_UARTEx_ReceiveToIdle_IT()` 重启下一次接收；
+ *   - `__HAL_UART_CLEAR_FLAG(&huart, UART_FLAG_TC)` 在初始化末尾显式清除 TC 标志，防止后续首次发送时误触发 TC 中断；
+ *   - 所有外设时钟（UART4、DMA1）均通过 `__HAL_RCC_*_CLK_ENABLE()` 显式开启，符合 STM32CubeMX 最佳实践；
+ *   - 初始化成功后打印 `"ESP8266 USART Init OK"`（仅 DEBUG_LEVEL_1+），便于产线快速验证；
+ *   - 失败时返回 `false`，上层（如 `vtask8266_Init()`）应执行错误恢复（如复位模块或重试）。
+ *
+ * @retval true  UART4 及关联 DMA/中断成功初始化，可立即用于 `esp8266_SendAT()` 和 AT 响应解析
+ * @retval false 初始化失败：HAL_UART_Init() 或 HAL_UARTEx_ReceiveToIdle_DMA() 返回 `HAL_ERROR`/`HAL_BUSY`
+ *
+ * @warning
+ *   - **必须确保 `recv_temp[]` 缓冲区生命周期全局有效且未被其他任务修改** —— DMA 直接访问该地址；
+ *   - `UART4_IRQn` 和 `DMA1_Stream4_IRQn` 的中断服务函数（ISR）**必须已正确实现**：
+ *       • `UART4_IRQHandler` 中需调用 `HAL_UART_IRQHandler()` → 触发 `HAL_UARTEx_RxEventCallback()`；
+ *       • `DMA1_Stream4_IRQHandler` 中需调用 `HAL_DMA_IRQHandler()` → 完成传输处理；
+ *   - 若 `RECV_DATA_BUFFER` 小于 ESP8266 单次响应长度（如大 JSON 或固件升级包），将导致 DMA 溢出 —— 此函数不校验缓冲区是否足够；
+ *   - 本函数**不启动 UART 发送 DMA**，发送始终使用 `HAL_UART_Transmit_DMA()` 按需触发（见 `esp8266_SendAT()`）。
+ *
+ * @see esp8266_SendAT(), HAL_UARTEx_ReceiveToIdle_DMA(), UART4_IRQHandler(), DMA1_Stream4_IRQHandler()
+ * @see HAL_UARTEx_RxEventCallback(), HAL_UART_TxCpltCallback()
+ */
 bool UART4_Init( void )
 {
   __HAL_RCC_UART4_CLK_ENABLE();
@@ -637,8 +804,38 @@ static uint32_t usart_timeout_Calculate( uint16_t data_len )
 }
 
 
+
+
+/**
+ * @brief 释放当前持有的最后一帧 AT 响应数据，标记其为“已消费”，并清空缓冲区内容
+ *
+ * 该函数用于显式告知驱动层：“上一帧响应数据已完成解析，可安全覆盖”。
+ * 它将 `hesp8266.LastFrameValid` 置为 `LastRecvFrame_Used`，并调用 `memset()` 彻底清零
+ * `hesp8266.LastReceivedFrame` 结构体（含 `RecvData[]` 缓冲区与 `Data_Len`），防止残留数据
+ * 干扰后续解析（如旧 `+IPD` 数据未清导致误匹配）。
+ *
+ * @note
+ *   - 此函数**必须在成功解析一帧响应后手动调用**（例如：提取完 `"OK"`、解析完 `"+CIPSTART:"` 或 `"+IPD,"` 后）；
+ *   - 若未调用本函数，`esp8266_WaitResponse()` 将拒绝接收新帧（返回 NULL），避免重复解析同一帧；
+ *   - 使用递归互斥量 `xMutexEsp` 保护临界区，确保多任务/中断安全（DMA 接收与解析不冲突）；
+ *   - 清零操作使用 `sizeof(EspRecvMsg_t)`，精确覆盖整个结构体（含 padding），杜绝未初始化字节。
+ *
+ * @warning
+ *   - ❗ 调用前请确保 `LastReceivedFrame.RecvData` 中的数据**已全部提取完毕**（如 `out_val` 已 memcpy）；
+ *     返回的指针（如 `esp8266_WaitResponse()` 的结果）在调用本函数后立即失效！
+ *   - ❗ **严禁在 UART RX IDLE 中断或 DMA 回调中直接调用** —— `xSemaphoreTakeRecursive()` 不可在中断上下文使用；
+ *     如需在中断中触发清理，请通过 `xTaskNotifyGive()` 唤醒解析任务后由任务调用。
+ *   - ❗ 若 `xSemaphoreTakeRecursive()` 失败（极罕见），本函数静默返回，**不会清空数据** —— 上层需保证互斥量已正确创建且未损坏。
+ *
+ * @see esp8266_WaitResponse(), at_extractString_between_quotes(), at_extractNum()
+ */
 void esp8266_DropLastFrame(void)
 {
+    if ( hesp8266.LastFrameValid == LastRecvFrame_Used )
+    {
+      return;
+    }
+
     if (xSemaphoreTakeRecursive(xMutexEsp, portMAX_DELAY) == pdPASS)
     {
         hesp8266.LastFrameValid = LastRecvFrame_Used;
@@ -651,6 +848,33 @@ void esp8266_DropLastFrame(void)
 }
 
 
+
+
+/**
+ * @brief 初始化 ESP8266 句柄结构体（HAL 层抽象对象）的默认状态与运行时资源
+ *
+ * 该函数执行以下关键操作：
+ *   1. 重置所有状态字段至安全初始值（如 RetryCount=0, Status=DISCONNECTED）；
+ *   2. 安全拷贝预定义的 WiFi 凭据（WIFI_SSID / WIFI_PASSWORD）到句柄缓冲区，
+ *      使用 strncpy + 显式 '\0' 终止，防止缓冲区溢出与未终止字符串风险；
+ *   3. 创建用于接收 AT 响应数据帧的 FreeRTOS 队列（xRecvQueue），大小为 DATA_QUEUE_LENGTH；
+ *      若创建失败，记录调试日志并立即返回（不中断上层流程）；
+ *   4. 不初始化硬件资源（UART/DMA/IRQ），此职责由 UART4_Init() 独立承担；
+ *   5. 不创建互斥量（xMutexEsp）或任务句柄，这些由 vtask8266_Init() 在上下文安全后完成。
+ *
+ * @note
+ *   - 此函数为纯软件初始化，**不触发任何硬件访问或阻塞操作**，可安全在任意上下文调用；
+ *   - 所有字符串拷贝均遵循 C 安全实践：长度严格限制于目标缓冲区 size-1，并手动补 '\0'；
+ *   - 队列创建失败时仅记录错误，不 panic —— 上层（vtask8266_Init）会检查并处理该失败；
+ *   - 调用者必须确保传入的 hpesp8266 指针有效且已分配内存（非 NULL）。
+ *
+ * @param[in,out] hpesp8266 指向待初始化的 ESP8266_HandleTypeDef 结构体指针
+ *                          （必须为已分配内存的有效地址，否则直接 return）
+ *
+ * @retval None
+ *
+ * @see UART4_Init(), vtask8266_Init(), xQueueCreate()
+ */
 static void esp8266Handle_Initial( ESP8266_HandleTypeDef *hpesp8266 )
 {
   if ( hpesp8266 == NULL )
@@ -665,6 +889,8 @@ static void esp8266Handle_Initial( ESP8266_HandleTypeDef *hpesp8266 )
   hpesp8266->TargetMode = STATION_SOFTAP;
   hpesp8266->LastReceivedFrame.Data_Len = 0;
   hpesp8266->LastFrameValid = LastRecvFrame_Used;
+
+  memset(hpesp8266->Wifi_Ipv4, 0, sizeof(hpesp8266->Wifi_Ipv4));
 
   strncpy(hpesp8266->WifiSSID, WIFI_SSID, sizeof(hpesp8266->WifiSSID) - 1);
   hpesp8266->WifiSSID[sizeof(hpesp8266->WifiSSID) - 1] = '\0';
@@ -690,9 +916,42 @@ static void esp8266Handle_Initial( ESP8266_HandleTypeDef *hpesp8266 )
 
 
 
+
 /**
- * @brief 从最新一帧数据中查找 key="value" 形式的值，并复制到 out_val 缓冲区
- *      
+ * @brief 从 ESP8266 最新接收的有效响应帧中提取指定键（key）对应的双引号内字符串值
+ *
+ * 该函数是 AT 响应解析的关键工具，用于安全提取形如 `+CIPSTA:ip:"192.168.4.1"` 或
+ * `AT+CWJAP="MyWiFi","******"` 等响应中 key 后紧跟的 `"value"` 字符串。
+ *
+ * @note
+ *   - 提取逻辑完全委托给底层函数 `at_get_string_between_quotes()`，本函数仅负责：
+ *       • 参数合法性校验（指针非空、out_len > 0）；
+ *       • 从 `hpesp8266->LastReceivedFrame` 中提供原始数据与长度；
+ *       • 根据 `mode` 参数决定是否自动标记该帧为“已消费”（即置 `LastFrameValid = Used`）；
+ *   - 若 `mode == pdTRUE`：成功提取后立即将 `LastFrameValid` 设为 `LastRecvFrame_Used`，
+ *     防止后续调用重复解析同一帧（典型用于初始化阶段的一次性提取）；
+ *   - 若 `mode == pdFALSE`：仅返回提取结果，不修改帧状态，适用于需多次解析同一帧的场景；
+ *   - 所有调试输出（`printf`）受 `__DEBUG_LEVEL_1__` 宏控制，不影响 Release 构建；
+ *   - `out_val` 缓冲区必须由调用者确保足够容纳目标字符串（含终止 `\0`），本函数不越界写入。
+ *
+ * @param[in]     hpesp8266 指向 ESP8266 句柄的指针，用于访问 `LastReceivedFrame`
+ * @param[in]     key       要匹配的键名（如 `"+CIPSTA:ip"`、`"AT+CWJAP"`），区分大小写
+ * @param[out]    out_val   输出缓冲区，用于存放提取出的字符串（不含双引号，已 `\0` 终止）
+ * @param[in]     out_len   `out_val` 缓冲区总字节数（必须 ≥ 1，否则返回 false）
+ * @param[in]     mode      解析模式：
+ *                          - `pdTRUE`: 成功后自动标记 `LastFrameValid = LastRecvFrame_Used`
+ *                          - `pdFALSE`: 不修改帧状态，保持 `LastFrameValid` 不变
+ *
+ * @retval true  成功提取字符串（`out_val` 已写入有效内容并 `\0` 终止）
+ * @retval false 参数非法、`at_get_string_between_quotes()` 失败、或 `out_len` 不足
+ *
+ * @warning
+ *   - 此函数**不检查 `LastFrameValid` 状态** —— 调用者须确保 `LastReceivedFrame` 当前有效且未被覆盖；
+ *   - 若 `hpesp8266->LastReceivedFrame.Data_Len == 0` 或数据未以 `\0` 结尾，`at_get_string_between_quotes()`
+ *     行为取决于其内部实现（建议其使用 `memmem` + 显式长度，而非 `strstr`）；
+ *   - `out_len` 必须 ≥ 1，否则无法写入终止符 `\0`，导致未定义行为。
+ *
+ * @see at_get_string_between_quotes(), esp8266_WaitResponse(), esp8266_DropLastFrame()
  */
 bool at_extractString_between_quotes
 ( 
@@ -728,12 +987,72 @@ bool at_extractString_between_quotes
   if ( mode == pdTRUE )
   {
     hpesp8266->LastFrameValid = LastRecvFrame_Used;
-
-    return true;
   }
 
   return true;
 }
+
+
+
+
+/**
+ * @brief 从 ESP8266 最新接收帧中提取指定键（key）后紧跟的无符号整数值
+ *
+ * 基于 `at_get_num()` 解析 `LastReceivedFrame.RecvData` 中形如 `"+KEY:123"` 的数字字段，
+ * 专用于获取 AT 响应中的状态码、ID、端口、长度等整型参数。
+ *
+ * @note
+ *   - 要求 `LastReceivedFrame` 当前有效（`LastFrameValid == LastRecvFrame_Valid`）；
+ *   - 提取逻辑依赖 `at_get_num()`：自动匹配 `"+key:"` 模式，跳过前导空白，提取首个连续十进制数字；
+ *   - 若 `mode == pdTRUE`，成功后自动标记该帧为“已消费”（`LastFrameValid = LastRecvFrame_Used`）；
+ *   - 所有调试输出受 `__DEBUG_LEVEL_1__` 控制，不影响 Release 构建。
+ *
+ * @param[in]  hpesp8266 指向 ESP8266 句柄的指针（必须非 NULL）
+ * @param[in]  key       待查找的键名（不含 `"+"` 和 `":"`，如 `"HTTPCLIENT"`, `"CIPSTATUS"`）
+ * @param[out] out_val   输出参数：成功时写入解析得到的 `uint32_t` 值（不校验溢出）
+ * @param[in]  mode      消费模式：`pdTRUE` → 提取后自动释放帧；`pdFALSE` → 保留帧状态供多次解析
+ *
+ * @retval true  成功找到 `"+key:"` 且其后存在有效十进制数字，并完成赋值
+ * @retval false 参数非法、`at_get_num()` 失败、或 `out_val` 为 NULL
+ *
+ * @warning
+ *   - ❗ 不支持负数、十六进制、逗号分隔、科学计数法或带单位字符串（如 `"123ms"`）；
+ *   - ❗ 返回 `true` 不代表数值语义合法（如端口号 > 65535），上层需按协议校验范围；
+ *   - 此函数**不加锁** —— 调用者须确保 `hpesp8266->LastReceivedFrame` 在解析期间未被 DMA 覆盖（通常已在 `esp8266_WaitResponse()` 后持有 `xMutexEsp`）。
+ */
+bool at_extractNum( ESP8266_HandleTypeDef *hpesp8266, const char *key, uint32_t *out_val, BaseType_t mode )
+{
+  if ( !hpesp8266 || !key || !out_val )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("Invalid parameter in at_extractNum.\n");
+    #endif    
+
+    LOG_WRITE(LOG_DEBUG, "NULL", "Invalid parameter in at_extractNum.");
+    return false; 
+  }
+
+  bool result = at_get_num(hpesp8266->LastReceivedFrame.RecvData, hesp8266.LastReceivedFrame.Data_Len, key, out_val);
+
+  if ( result == false )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("Get num failed in at_extractNum.\n");
+    #endif 
+
+    LOG_WRITE(LOG_WARNING, "NULL", "Get num failed in at_extractNum.");
+    return false;
+  }
+
+  if ( mode == pdTRUE )
+  {
+    hpesp8266->LastFrameValid = LastRecvFrame_Used;
+  }
+
+  return true;
+}
+
+
 
 
 /**

@@ -14,6 +14,7 @@
 #include "queue.h"
 #include "at_parser.h"
 #include "flash_log.h"
+#include "esp8266_tcp.h"
 
 /* ********************************************** */
 #define WIFI_SSID           "esptest"
@@ -175,11 +176,14 @@ typedef struct
   bool at_extractString_between_quotes
   ( 
     ESP8266_HandleTypeDef *hpesp8266, 
-    const char* key,
+    const char *key,
     char* out_val,
     uint8_t out_len,
     BaseType_t mode
   );
+
+
+  bool at_extractNum( ESP8266_HandleTypeDef *hpesp8266, const char *key, uint32_t *out_val, BaseType_t mode );
 
 
 

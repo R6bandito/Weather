@@ -1004,6 +1004,16 @@
               <FileType>5</FileType>
               <FilePath>.\Hardware\esp8266_driver.h</FilePath>
             </File>
+            <File>
+              <FileName>esp8266_tcp.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\Hardware\esp8266_tcp.c</FilePath>
+            </File>
+            <File>
+              <FileName>esp8266_tcp.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\Hardware\esp8266_tcp.h</FilePath>
+            </File>
           </Files>
         </Group>
       </Groups>
