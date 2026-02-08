@@ -38,6 +38,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "stm32f4xx_it.h"
+#include "esp8266_driver.h"
 
 /* Private variables ---------------------------------------------------------*/
 extern UART_HandleTypeDef esp8266_huart;

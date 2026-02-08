@@ -7,16 +7,15 @@
 #include "bsp_usart_debug.h"
 #include "hal_timebase.h"
 #include "task_Exam.h"
-#include "esp8266_driver.h"
 #include "flash_log.h"
 
 
 
-// ========== Ç¿ÖÆ¶¨Òå ATOMIC_*  ==========
+// ========== Ç¿ï¿½Æ¶ï¿½ï¿½ï¿½ ATOMIC_*  ==========
 #ifndef __ATOMIC_MACROS_DEFINED__
 #define __ATOMIC_MACROS_DEFINED__
 
-// ·ÀÖ¹ÖØ¸´¶¨Òå
+// ï¿½ï¿½Ö¹ï¿½Ø¸ï¿½ï¿½ï¿½ï¿½ï¿½
 #ifndef ATOMIC_SET_BIT
   #define ATOMIC_SET_BIT(REG, BIT)                           \
     do {                                                     \

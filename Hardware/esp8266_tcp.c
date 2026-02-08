@@ -1,13 +1,25 @@
 #include "esp8266_tcp.h"
+#include "stm32f4xx_hal.h"
+#include "esp8266_driver.h"
 
 extern ESP8266_HandleTypeDef hesp8266;
+
+extern UART_HandleTypeDef esp8266_huart;
 
 static esp_tcp_handle_t htcp8266;
 
 /* ************************* */
 esp_tcp_err_t esp8266_tcp_Init( void );
+
 const esp_tcp_handle_t* esp8266_tcp_getState( void );
 
+esp_tcp_err_t esp8266_tcp_Connect( const char *Host, uint16_t Port, connect_type_t Mode );
+
+esp_tcp_err_t esp8266_tcp_Disconnect( void );
+
+esp_tcp_err_t esp8266_tcp_Send( const uint8_t *data, uint16_t data_len );
+
+esp_tcp_err_t esp8266_tcp_DNSResolve( const char *Host, char *out_ip_str, uint8_t *out_ip_size );
 /* ************************* */
 
 
@@ -28,6 +40,32 @@ const esp_tcp_handle_t* esp8266_tcp_getState()
 
 
 
+
+/**
+ * @brief 初始化 ESP8266 TCP 客户端子系统（单连接、透传关闭模式）
+ *
+ * 本函数完成 TCP 通信前的关键 AT 指令配置，确保 ESP8266 处于稳定、可预测的工作状态：
+ *   -  验证 WiFi 已成功关联至预设 SSID（通过 `AT+CWJAP?` + `WifiSSID` 字符串比对）
+ *   -  强制设置为单连接模式（`AT+CIPMUX=0`），避免多连接 ID 管理复杂性
+ *   -  切换至普通数据传输模式（`AT+CIPMODE=0`），禁用透传（Transparent Mode）
+ *   -  （注：TCP 超时 `AT+CIPSTO` 移至 `connect()` 中按需设置，提升灵活性）
+ *
+ * @pre
+ *   - 必须已在 `esp8266_driver_init()` 中完成 UART、DMA、定时器及互斥量（xMutexEsp）初始化；
+ *   - `hesp8266.WifiSSID` 和 `hesp8266.Wifi_Ipv4` 必须已由 WiFi 连接状态机正确填充；
+ *   - ESP8266 固件版本 ≥ V2.0.0（支持 `AT+CWJAP?`, `AT+CIPMUX?`, `AT+CIPMODE?`）。
+ *
+ * @return esp_tcp_err_t 返回初始化结果：
+ *         - @ref ESP_TCP_OK                : 初始化成功，TCP 子系统就绪；
+ *         - @ref ESP_TCP_ERR_CONNECT_FAIL  : WiFi 未连接或连接 SSID 不匹配；
+ *         - @ref ESP_TCP_ERR_TIMEOUT       : AT 命令发送超时（UART 卡死、ESP 无响应）；
+ *         - @ref ESP_TCP_ERR_NO_RESPONSE   : AT 命令有响应但无有效数据（解析失败/固件不兼容）；
+ *
+ * @note
+ *   - 本函数是**线程安全的**（内部使用 `xMutexEsp` 保护 UART 通信），但调用者应避免并发调用；
+ *   - 初始化后，`htcp8266` 结构体被完全清零并进入 `DISCONNECTED` 状态，可供后续 `connect()` 安全使用；
+ *   - 错误日志通过 `LOG_WRITE()` 输出，调试信息在 `__DEBUG_LEVEL_1__` 宏启用时打印到 USART；
+ */
 esp_tcp_err_t esp8266_tcp_Init( void )
 {
   void *pResponse = NULL;
@@ -176,7 +214,7 @@ TCP_Init_Wait_Err:
   }
 
   htcp8266.is_Connected = false;
-  htcp8266.conn_ID = 0xFF;
+  htcp8266.conn_ID = 0; // 单连接模式conn_ID恒为0.
   htcp8266.remain = 0xFF;
   htcp8266.Port = 0;
   memset(htcp8266.Host, 0, sizeof(htcp8266.Host));
@@ -188,6 +226,427 @@ TCP_Init_Wait_Err:
 
   return ESP_TCP_OK;
 }
+
+
+
+esp_tcp_err_t esp8266_tcp_Connect( const char *Host, uint16_t Port, connect_type_t Mode )
+{
+  char *conn_type = NULL;
+
+  if ( !Host || Port == 0 || Port > 65535 )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("Wrong Param in esp8266_tcp_Connect.\n");
+    #endif  
+
+    LOG_WRITE(LOG_WARNING, "NULL", "Wrong Param in esp8266_tcp_Connect.");
+
+    return ESP_TCP_ERR_INVALID_ARGS;
+  }
+
+  // 判断当前是否已有TCP连接.
+  if ( htcp8266.is_Connected && htcp8266.state == ESP_TCP_STATE_CONNECTED )
+  {
+    LOG_WRITE(LOG_INFO, "TCP", "Already connect to %s:%u", htcp8266.Host, htcp8266.Port);
+
+    return ESP_TCP_ERR_BUSY;
+  }
+
+  // 模式检查.
+  if ( Mode == TCPv6 )
+  {
+    conn_type = "TCPv6";
+  }
+  else
+  {
+    conn_type = "TCP";
+  }
+
+
+  // 构造命令.
+  char at_cmd[128];
+  int len = snprintf(at_cmd, sizeof(at_cmd), "AT+CIPSTART=\"%s\",\"%s\",%u", conn_type, Host, Port);
+  if ( len <= 0 || len >= (int)sizeof(at_cmd) )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("ATCmd buffer overflow in esp8266_tcp_Connect.\n");
+    #endif 
+
+    LOG_WRITE(LOG_WARNING, "NULL", "ATCmd buffer overflow.");
+
+    return ESP_TCP_ERR_INVALID_ARGS;
+  }
+
+
+  htcp8266.state = ESP_TCP_STATE_CONNECTING;
+  // 发送命令.
+  if ( !esp8266_SendAT("%s", at_cmd) )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("ATSend failed in esp8266_tcp_Connect.\n");
+    #endif     
+
+    LOG_WRITE(LOG_ERROR, "NULL", "ATSend failed in esp8266_tcp_Connect.");
+
+    htcp8266.state = ESP_TCP_STATE_DISCONNECTED;
+
+    return ESP_TCP_ERR_TIMEOUT;
+  } 
+
+
+  // 命令解析.
+  HAL_Delay(5); // 适当延时.
+  void *pResponse = esp8266_WaitResponse("OK", ESP_TCP_CON_TIMEOUT);
+  if ( pResponse == NULL )
+  {
+    htcp8266.state = ESP_TCP_STATE_DISCONNECTED;
+
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("WaitRes failed in esp8266_tcp_Connect.\n");
+    #endif     
+
+    LOG_WRITE(LOG_WARNING, "NULL", "WaitRes failed in esp8266_tcp_Connect.");
+
+    esp8266_DropLastFrame();
+
+    return ESP_TCP_ERR_NO_RESPONSE;
+  } 
+
+  const uint8_t *response_buf = hesp8266.LastReceivedFrame.RecvData;
+  uint16_t response_buf_len = hesp8266.LastReceivedFrame.Data_Len;
+  if ( memmem(response_buf, response_buf_len, (const void *)"CONNECT", 7) )
+  {
+    // 连接成功.
+    uint8_t flag = 0;
+    uint8_t *pReturn = NULL;
+    uint16_t pLen = 0;
+    esp8266_DropLastFrame();
+
+    if ( !esp8266_SendAT("AT+CIPSTATUS") ) 
+    {
+      // 查询信息失败，但是连接是成功了的，不能直接返回.
+      #if defined(__DEBUG_LEVEL_1__)
+        printf("AT+CIPSTATE? send error.\n");
+      #endif       
+
+      LOG_WRITE(LOG_WARNING, "NULL", "AT+CIPSTATE? send error.");
+    } else  flag = 1;
+
+    if ( flag && !esp8266_WaitResponse("OK", ESP_TCP_CMD_TIMEOUT) )
+    {
+      return ESP_TCP_ERR_NO_RESPONSE;
+    }
+
+    if ( at_extractField(&hesp8266, AT_FIELD_IN_QUOTES, 2, &pReturn, &pLen, pdTRUE) )
+    {
+      memcpy(htcp8266.remote_IP, pReturn, pLen);
+    }
+
+    htcp8266.is_Connected = true;
+    htcp8266.conn_ID = 0;
+    htcp8266.Port = Port;
+    htcp8266.state = ESP_TCP_STATE_CONNECTED;
+    strncpy(htcp8266.Host, Host, sizeof(htcp8266.Host) - 1);
+    htcp8266.Host[sizeof(htcp8266.Host) - 1] = '\0';
+    esp8266_DropLastFrame();
+
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("TCP Successfully connect to %s\n", Host);
+    #endif 
+
+    return ESP_TCP_OK;
+  }
+
+  if ( memmem(response_buf, response_buf_len, (const void *)"ERROR", 5) != NULL || 
+          memmem(response_buf, response_buf_len, (const void *)"FAIL", 4) != NULL )
+  {
+    htcp8266.state = ESP_TCP_STATE_DISCONNECTED;
+
+    // 连接失败.
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("TCP Connect Failed.\n");
+    #endif
+
+    esp8266_DropLastFrame();
+
+    LOG_WRITE(LOG_ERROR, "NULL", "TCP CONN FAILED.");
+
+    return ESP_TCP_ERR_CONNECT_FAIL;
+  }
+
+  esp8266_DropLastFrame();
+
+  htcp8266.state = ESP_TCP_STATE_DISCONNECTED;
+
+  LOG_WRITE(LOG_ERROR, "NULL", "Unexpected Error in esp8266_tcp_Connect.");
+
+  return ESP_TCP_ERR_NO_RESPONSE;
+}
+
+
+
+esp_tcp_err_t esp8266_tcp_Disconnect( void )
+{
+  if ( ( htcp8266.is_Connected == false ) && ( htcp8266.state != ESP_TCP_STATE_CONNECTED ) && ( strlen(htcp8266.remote_IP) == 0 ) )
+  {
+    // 未连接TCP 空调用，直接返回. 
+    return ESP_TCP_OK;
+  }
+
+  htcp8266.state = ESP_TCP_STATE_DISCONNECTING;
+
+  if ( !esp8266_SendAT("AT+CIPCLOSE") )
+  {
+    htcp8266.state = ESP_TCP_STATE_CONNECTED;
+
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("ATCmd Send Failed in esp8266_tcp_Disconnect.\n");
+    #endif 
+
+    LOG_WRITE(LOG_ERROR, "NULL", "ATSend Failed in esp8266_tcp_Disconnect.");
+    return ESP_TCP_ERR_TIMEOUT;
+  } 
+
+
+  uint8_t *pReturn = (uint8_t *)esp8266_WaitResponse("OK", ESP_TCP_CMD_TIMEOUT);
+  if ( !pReturn )
+  {
+    // 命令发送成功，但是未收到回复信号.目前是否断开状态未知.
+    htcp8266.state = ESP_TCP_STATE_ERROR;
+
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("Wait Failed in esp8266_tcp_Disconnect.\n");
+    #endif 
+    
+    LOG_WRITE(LOG_ERROR, "NULL", "Wait Failed in esp8266_tcp_Disconnect.");
+    return ESP_TCP_ERR_NO_RESPONSE;
+  } 
+
+  // 成功断开连接. 状态复位.
+  htcp8266.conn_ID = 0xFF;
+  htcp8266.is_Connected = false;
+  htcp8266.Port = 0;
+  htcp8266.state = ESP_TCP_STATE_DISCONNECTED;
+  memset(htcp8266.remote_IP, 0, sizeof(htcp8266.remote_IP));
+  memset(htcp8266.Host, 0, sizeof(htcp8266.Host));
+
+  return ESP_TCP_OK;
+}
+
+
+
+
+esp_tcp_err_t esp8266_tcp_Send( const uint8_t *data, uint16_t data_len )
+{
+  if ( !data || data_len > 65535 || data_len == 0 )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("Wrong Param of esp8266_tcp_Send.\n");
+    #endif 
+
+    LOG_WRITE(LOG_WARNING, "NULL", "Wrong Param of esp8266_tcp_Send.");
+    return ESP_TCP_ERR_INVALID_ARGS;
+  } 
+
+  if ( ( htcp8266.is_Connected == false ) || ( htcp8266.state != ESP_TCP_STATE_CONNECTED ) )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("No Connect Detected.Send Failed.\n");
+    #endif 
+
+    LOG_WRITE(LOG_WARNING, "NULL", "No Connect Detected.Send Failed.");
+    return ESP_TCP_ERR_CONNECT_FAIL;
+  } 
+
+  char cmd[32];
+
+  int len = snprintf(cmd, sizeof(cmd), "AT+CIPSEND=%u", data_len);
+  if ( len <= 0 || len >= (int)sizeof(cmd) )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("cmd build failed in esp8266_tcp_Send.\n");
+    #endif     
+
+    LOG_WRITE(LOG_ERROR, "NULL", "cmd build failed in esp8266_tcp_Send.");
+    return ESP_TCP_ERR_CMD_BUILD_ERROR;
+  } 
+
+
+  if ( !esp8266_SendAT("%s", cmd) )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("At Send error in esp8266_tcp_Send.\n");
+    #endif    
+    
+    LOG_WRITE(LOG_ERROR, "NULL", "At Send error in esp8266_tcp_Send.");
+    return ESP_TCP_ERR_TIMEOUT;
+  }
+
+
+  uint8_t *pReturn = (uint8_t *)esp8266_WaitResponse(">", ESP_TCP_CMD_TIMEOUT);
+  if ( pReturn == NULL )
+  {
+    esp8266_DropLastFrame();
+
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("wait error in esp8266_tcp_Send.\n");
+    #endif  
+    
+    LOG_WRITE(LOG_ERROR, "NULL", "wait error in esp8266_tcp_Send.");
+    return ESP_TCP_ERR_NO_RESPONSE;
+  }
+
+  esp8266_DropLastFrame();
+
+  // 阻塞式发送确保数据发送完全.
+  HAL_UART_Transmit(&esp8266_huart, data, data_len, ESP_TCP_CMD_TIMEOUT);
+  HAL_Delay(2);
+
+  void *pRes = esp8266_WaitResponse("SEND OK", ESP_TCP_CMD_TIMEOUT);
+  if ( !pRes )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("Not Recv Send OK in esp8266_tcp_Send.\n");
+    #endif  
+    
+    LOG_WRITE(LOG_ERROR, "NULL", "Not Recv Send OK in esp8266_tcp_Send.");
+    return ESP_TCP_ERR_NO_RESPONSE;    
+  }
+
+  esp8266_DropLastFrame();
+
+  return ESP_TCP_OK;
+}
+
+
+
+
+esp_tcp_err_t esp8266_tcp_DNSResolve( const char *Host, char *out_ip_str, uint8_t *out_ip_size )
+{
+  if ( !Host || !out_ip_str || out_ip_size == 0 )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("Wrong Param of esp8266_tcp_DNSResolve.\n");
+    #endif
+
+    LOG_WRITE(LOG_WARNING, "NULL", "Wrong Param of esp8266_tcp_DNSResolve.");
+    return ESP_TCP_ERR_INVALID_ARGS;
+  } 
+
+  // 输入的Host就是原生Ipv4地址. 直接返回.
+  if ( strchr(Host, '.') && sscanf(Host, "%hhu.%hhu.%hhu.%hhu", 
+                                                (unsigned char *)&out_ip_str[0], 
+                                                (unsigned char *)&out_ip_str[1],
+                                                (unsigned char *)&out_ip_str[2],
+                                                (unsigned char *)&out_ip_str[3]) == 4 )
+  {
+    int len = snprintf(out_ip_str, out_ip_size, "%s", Host);
+    if ( len <= 0 || len >= (int)out_ip_size )
+    {
+      #if defined(__DEBUG_LEVEL_1__)
+        printf("Ip buf overflow of esp8266_tcp_DNSResolve.\n");
+      #endif 
+
+      LOG_WRITE(LOG_ERROR, "NULL", "Ipbuf OVFL of esp8266_tcp_DNSResolve.");
+      return ESP_TCP_ERR_CMD_BUILD_ERROR;
+    }
+
+    return ESP_TCP_OK;
+  }
+
+
+  // 验证 Host 合法性.
+  const char *__ptrTemp = Host;
+  while( *__ptrTemp )
+  {
+    if ( !isalnum((unsigned char)*__ptrTemp) && ( *__ptrTemp != '.' && *__ptrTemp != '-' ) )
+    {
+      #if defined(__DEBUG_LEVEL_1__)
+        printf("DNS: Illegal char '%c' in host '%s'\n", *__ptrTemp, Host);
+      #endif 
+
+      LOG_WRITE(LOG_WARNING, "NULL", "DNS Illegal in esp8266_tcp_DNSResolve.");
+      return ESP_TCP_ERR_INVALID_ARGS;
+    } 
+
+    __ptrTemp++;
+  }
+
+
+  static char at_cmd[128];
+  int len = snprintf(at_cmd, sizeof(at_cmd), "AT+CIPDOMAIN=\"%s\"", Host);
+  if ( len <= 0 || len >= (int)sizeof(at_cmd) )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("ATCmd Build Faild in esp8266_tcp_DNSResolve.\n");
+    #endif 
+
+    LOG_WRITE(LOG_ERROR, "NULL", "AT build fail in esp8266_tcp_DNSResolve.");
+    return ESP_TCP_ERR_CMD_BUILD_ERROR;
+  }
+
+
+  if ( !esp8266_SendAT("%s", at_cmd) )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("AT send error in esp8266_tcp_DNSResolve.\n");
+    #endif     
+
+    LOG_WRITE(LOG_ERROR, "NULL", "AT send error in esp8266_tcp_DNSResolve.");
+    memset(at_cmd, 0, sizeof(at_cmd));
+    return ESP_TCP_ERR_TIMEOUT;
+  } 
+
+
+  void *pReturn = esp8266_WaitResponse("OK", ESP_TCP_CMD_TIMEOUT);
+  if ( !pReturn )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("wait error in esp8266_tcp_DNSResolve.\n");
+    #endif         
+
+    LOG_WRITE(LOG_ERROR, "NULL", "wait error in esp8266_tcp_DNSResolve.");
+    memset(at_cmd, 0, sizeof(at_cmd));
+    return ESP_TCP_ERR_NO_RESPONSE;;
+  }
+
+
+  uint8_t *pRet = NULL;
+  uint16_t size = 0;
+  bool res = at_extractField(&hesp8266, AT_FIELD_AFTER_COLON, 1, &pRet, &size, pdTRUE);
+  if ( !res )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("extract error in esp8266_tcp_DNSResolve.\n");
+    #endif            
+
+    LOG_WRITE(LOG_ERROR, "NULL", "extract error in esp8266_tcp_DNSResolve.");
+    memset(at_cmd, 0, sizeof(at_cmd));
+    return ESP_TCP_ERR_TIMEOUT;
+  }
+  memcpy(out_ip_str, pRet, size);
+  out_ip_str[size] = '\0';
+
+  // 额外校验所得是否为正确Ipv4地址.
+  uint8_t a,b,c,d;
+  if (sscanf(out_ip_str, "%hhu.%hhu.%hhu.%hhu", &a,&b,&c,&d) != 4 ||
+      a > 255 || b > 255 || c > 255 || d > 255) 
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("Invalid IP format: %s.\n", out_ip_str);
+    #endif           
+
+    LOG_WRITE(LOG_ERROR, "NULL", "Invalid IP format: %s", out_ip_str);
+    memset(at_cmd, 0, sizeof(at_cmd));
+    memset(out_ip_str, 0, out_ip_size);
+    return ESP_TCP_ERR_TIMEOUT;
+  }
+
+  memset(at_cmd, 0, sizeof(at_cmd));
+  return ESP_TCP_OK;
+}
+
+
 
 
 

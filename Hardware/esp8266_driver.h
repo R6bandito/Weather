@@ -9,12 +9,12 @@
 #include <stdarg.h>
 #include <stdbool.h>
 #include <string.h>
+#include "at_parser.h"
 #include "main.h"
 #include <assert.h>
 #include "queue.h"
-#include "at_parser.h"
 #include "flash_log.h"
-#include "esp8266_tcp.h"
+
 
 /* ********************************************** */
 #define WIFI_SSID           "esptest"
@@ -185,7 +185,12 @@ typedef struct
 
   bool at_extractNum( ESP8266_HandleTypeDef *hpesp8266, const char *key, uint32_t *out_val, BaseType_t mode );
 
+  bool at_extractField( ESP8266_HandleTypeDef *hpesp8266, at_field_type_t type, uint8_t index, const uint8_t **pReturn, uint16_t *pLen, BaseType_t mode );
 
+  void*  memmem( 
+    const uint8_t *haystack, uint16_t stack_len, 
+    const void* need_str,    uint16_t need_str_len                      
+  );
 
 #ifdef __cplusplus
   }

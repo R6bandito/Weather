@@ -1,4 +1,5 @@
 #include "Mspinit.h"
+#include "esp8266_driver.h"
 
 DMA_HandleTypeDef  hdma_rx;
 
@@ -36,7 +37,7 @@ void HAL_UART_MspInit( UART_HandleTypeDef *huart )
   /* ESP8266 通信串口GPIO初始化 .*/
   if ( huart -> Instance == UART4 )
   {
-    GPIO_Clk_Enable(ESP_UART_PORT);
+    GPIO_Clk_Enable(GPIOC);
 
     GPIO_InitTypeDef GPIO_InitStructure;
     GPIO_InitStructure.Alternate = GPIO_AF8_UART4;

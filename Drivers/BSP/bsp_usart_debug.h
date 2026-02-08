@@ -21,7 +21,7 @@
 #include "FreeRTOS.h"
 #include "semphr.h"
 #include "Perp_clkEn.h"
-#include "Mspinit.h"
+//#include "Mspinit.h"
 
 /*  *********************************************    */
 #define DEBUG_BAUDRATE             115200

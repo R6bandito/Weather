@@ -1,4 +1,6 @@
 #include "esp8266_driver.h"
+#include "esp8266_tcp.h"
+
 
 /* Global Ver.*/
 /* ********************************************** */
@@ -48,6 +50,7 @@ bool at_extractString_between_quotes
   BaseType_t mode
 );
 bool at_extractNum( ESP8266_HandleTypeDef *hpesp8266, const char *key, uint32_t *out_val, BaseType_t mode );
+bool at_extractField( ESP8266_HandleTypeDef *hpesp8266, at_field_type_t type, uint8_t index, const uint8_t **pReturn, uint16_t *pLen, BaseType_t mode );
 /* ********************************************** */
 
 
@@ -252,13 +255,43 @@ Free:
 
   if ( currentState == INIT_STATE_COMPLETE )
   {
+    // 调试部分****************************
     const LogStatus_t* log_status = Log_GetStatus();
 
     esp8266_tcp_Init();
 
+    esp8266_tcp_Connect("t.weather.sojson.com", 80, TCP);
+
+    const esp_tcp_handle_t *pState = esp8266_tcp_getState();
+
+    printf("\n=== ESP8266 TCP Connection State ===\n");
+    printf("is_Connected : %s\n", pState->is_Connected ? "true" : "false");
+    printf("conn_ID      : %u\n", (unsigned int)pState->conn_ID);
+    printf("Port         : %u\n", (unsigned int)pState->Port);
+    printf("Host         : \"%.*s\"\n", 
+           (int)sizeof(pState->Host), 
+           pState->Host[0] ? pState->Host : "(not set)");
+    printf("remote_IP    : \"%.*s\"\n", 
+           (int)sizeof(pState->remote_IP), 
+           pState->remote_IP[0] ? pState->remote_IP : "(not connected)");
+    printf("state        : %s (%d)\n", 
+           (pState->state), (int)pState->state);
+    printf("remain       : 0x%02X\n", pState->remain);
+    printf("=====================================\n");
+
+    esp8266_tcp_Send("Https", 5);
+
+    uint8_t out_ip[18];
+
+    uint8_t out_size = 0;
+
+    esp8266_tcp_DNSResolve("t.weather.sojson.com", out_ip, sizeof(out_ip));
+
+    printf("Out IP:%s", out_ip);
+
     for( ; ; );
   }
-  
+  // 调试部分****************************
   /*    TEST     */
 }
 
@@ -971,6 +1004,16 @@ bool at_extractString_between_quotes
     return false;
   }
 
+  if ( hpesp8266->LastFrameValid == LastRecvFrame_Used )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("Not Valid Frame in at_extractString_between_quotes.\n");
+    #endif     
+
+    LOG_WRITE(LOG_ERROR, "NULL", "Not Valid Frame at_ext_betwn_quotes.");
+    return false;
+  }
+
   bool result = at_get_string_between_quotes(hpesp8266->LastReceivedFrame.RecvData, 
                                     hpesp8266->LastReceivedFrame.Data_Len, 
                                         key, out_val, out_len);
@@ -1032,6 +1075,16 @@ bool at_extractNum( ESP8266_HandleTypeDef *hpesp8266, const char *key, uint32_t 
     return false; 
   }
 
+  if ( hpesp8266->LastFrameValid == LastRecvFrame_Used )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("Not Valid Frame in at_extractNum.\n");
+    #endif     
+
+    LOG_WRITE(LOG_ERROR, "NULL", "Not Valid Frame in at_extractNum.");
+    return false;
+  }
+
   bool result = at_get_num(hpesp8266->LastReceivedFrame.RecvData, hesp8266.LastReceivedFrame.Data_Len, key, out_val);
 
   if ( result == false )
@@ -1043,6 +1096,50 @@ bool at_extractNum( ESP8266_HandleTypeDef *hpesp8266, const char *key, uint32_t 
     LOG_WRITE(LOG_WARNING, "NULL", "Get num failed in at_extractNum.");
     return false;
   }
+
+  if ( mode == pdTRUE )
+  {
+    hpesp8266->LastFrameValid = LastRecvFrame_Used;
+  }
+
+  return true;
+}
+
+
+
+bool at_extractField( ESP8266_HandleTypeDef *hpesp8266, at_field_type_t type, uint8_t index, const uint8_t **pReturn, uint16_t *pLen, BaseType_t mode )
+{
+  if ( !hpesp8266 || index == 0 || !pReturn || !pLen )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("Wrong Param of at_extractField.\n");
+    #endif 
+
+    LOG_WRITE(LOG_WARNING, "NULL", "Wrong Param of at_extractField.");
+    return false;
+  } 
+
+  if ( hpesp8266->LastFrameValid == LastRecvFrame_Used )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("Not Valid Frame in at_extractField.\n");
+    #endif     
+
+    LOG_WRITE(LOG_ERROR, "NULL", "Not Valid Frame in at_extractField.");
+    return false;
+  }
+
+  bool res = at_get_field(hpesp8266->LastReceivedFrame.RecvData, hpesp8266->LastReceivedFrame.Data_Len, type, index, pReturn, pLen);
+
+  if ( res == false )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("at_get_field Wrong.\n");
+    #endif     
+
+    LOG_WRITE(LOG_ERROR, "NULL", "at_get_field Wrong.");
+    return false;
+  } 
 
   if ( mode == pdTRUE )
   {
