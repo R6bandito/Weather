@@ -8,9 +8,11 @@
 
 
 
-#define ESP_TCP_CMD_TIMEOUT  ( 500UL  )
-#define ESP_TCP_CON_TIMEOUT  ( 50000UL )
-// #define TCP_TIMEOUT_S        ( 50     )
+#define ESP_TCP_CMD_TIMEOUT       ( 500UL  )
+#define ESP_TCP_CON_TIMEOUT       ( 50000UL )
+
+#define ESP_TCP_HOST_WEATHER      "t.weather.sojson.com"
+#define ESP_TCP_WEATHER_HOST_LEN  ( 64 )
 
 
 typedef enum

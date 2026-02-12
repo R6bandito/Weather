@@ -1014,6 +1014,16 @@
               <FileType>5</FileType>
               <FilePath>.\Hardware\esp8266_tcp.h</FilePath>
             </File>
+            <File>
+              <FileName>esp_http.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\Hardware\esp_http.c</FilePath>
+            </File>
+            <File>
+              <FileName>esp_http.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\Hardware\esp_http.h</FilePath>
+            </File>
           </Files>
         </Group>
       </Groups>

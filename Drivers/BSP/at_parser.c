@@ -293,6 +293,56 @@ static const uint8_t *skip_ws( const uint8_t *p )
 
 
 
+
+/**
+ * @brief 从原始 AT 响应缓冲区中按结构化规则提取第 `index` 个字段（无拷贝，仅返回指针和长度）
+ *
+ * 本函数是 AT 响应解析的核心工具，支持三种典型字段定位模式，专为**二进制安全解析**设计：
+ * - ✅ 不依赖 `\0` 终止符，完全由 `buf_len` 控制边界，可安全处理含 `\0` 或非 ASCII 数据的响应（如 +IPD）；
+ * - ✅ 所有内部指针运算均做越界检查，避免 HardFault；
+ * - ✅ `skip_ws()` 行为已明确：跳过目标字符（`'\"'`, `':'`, `','`）后的**首个空白字符**（见 `skip_ws` 注释）。
+ *
+ * @param[in]  buffer     指向 AT 响应原始数据的起始地址（`uint8_t*`，如 DMA 接收缓冲区）
+ * @param[in]  buf_len    响应数据有效字节数（必须 > 0，由上层保证）
+ * @param[in]  type       字段提取模式（见 `at_field_type_t` 枚举）：
+ *                        - `AT_FIELD_IN_QUOTES`: 提取第 `index` 对双引号内的内容（`find_nth(..., '"', true)`）
+ *                        - `AT_FIELD_AFTER_COLON`: 提取第 `index` 个 `':'` 后、直到 `,`/`;`/`:`/`\0`/`\r`/`\n` 前的内容
+ *                        - `AT_FIELD_BETWEEN_COMMA`: 提取第 `index` 个 `','` 后、直到下一个 `','` 前的内容
+ * @param[in]  index      目标字段的序号（从 1 开始计数；例如 `index=2` 表示“第二个字段”）
+ * @param[out] out_start  成功时指向字段起始位置的指针（**不包含前导空白，但可能含尾随空白**）
+ * @param[out] out_len    成功时写入字段长度（字节数，不含结尾 `\0`；调用者需自行分配足够缓冲区并手动 `\0` 终止）
+ *
+ * @retval true   成功定位并计算出字段范围（`*out_start` 和 `*out_len` 已有效）
+ * @retval false  参数非法、索引越界、未找到目标字符、字段被截断、或遇到非法终止符（如 `AT_FIELD_IN_QUOTES` 中缺少配对 `"`）
+ *
+ * @note
+ *   - ⚠️ `out_start` 指向 `buffer` 内部，**调用者必须确保 `buffer` 在使用 `*out_start` 期间不被覆盖**（推荐在 `xMutexEsp` 下使用）；
+ *   - ⚠️ `AT_FIELD_IN_QUOTES` 模式下，`index` 是**引号对序号**（非单引号出现次数），例如 `"a","b","c"` 中 `index=2` → `"b"`；
+ *   - ⚠️ `AT_FIELD_AFTER_COLON` 和 `AT_FIELD_BETWEEN_COMMA` 模式下，`index` 是**目标分隔符的出现序号**（从 1 开始）；
+ *   - ⚠️ 所有模式均**不自动 trim 尾随空白**；若需纯净值，请额外调用 `strtrim()` 或手动处理；
+ *   - ✅ 错误场景会通过 `__DEBUG_LEVEL_1__` 输出诊断信息（不影响返回值）。
+ *
+ * @example
+ *   // 解析 ESP8266 的 "+CIPSTATUS:0,\"TCP\",\"192.168.1.100\",5000,0,0" 响应
+ *   const uint8_t resp[] = "+CIPSTATUS:0,\"TCP\",\"192.168.1.100\",5000,0,0\r\n";
+ *   const uint8_t *field_start;
+ *   uint16_t field_len;
+ *
+ *   // ① 提取第 2 对引号内 IP 地址 → "192.168.1.100"
+ *   if (at_get_field(resp, sizeof(resp)-1, AT_FIELD_IN_QUOTES, 2, &field_start, &field_len)) {
+ *     printf("IP: %.*s\n", field_len, field_start); // 输出: IP: 192.168.1.100
+ *   }
+ *
+ *   // ② 提取第 1 个 ':' 后的连接 ID → "0"
+ *   if (at_get_field(resp, sizeof(resp)-1, AT_FIELD_AFTER_COLON, 1, &field_start, &field_len)) {
+ *     printf("ID: %.*s\n", field_len, field_start); // 输出: ID: 0
+ *   }
+ *
+ *   // ③ 提取第 4 个 ',' 后的端口号 → "5000"
+ *   if (at_get_field(resp, sizeof(resp)-1, AT_FIELD_BETWEEN_COMMA, 4, &field_start, &field_len)) {
+ *     printf("Port: %.*s\n", field_len, field_start); // 输出: Port: 5000
+ *   }
+ */
 bool at_get_field( 
   const uint8_t *buffer, uint16_t buf_len, 
    at_field_type_t type, uint8_t index,

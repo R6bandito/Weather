@@ -1,5 +1,6 @@
 #include "esp8266_driver.h"
 #include "esp8266_tcp.h"
+#include "esp_http.h"
 
 
 /* Global Ver.*/
@@ -260,7 +261,7 @@ Free:
 
     esp8266_tcp_Init();
 
-    esp8266_tcp_Connect("t.weather.sojson.com", 80, TCP);
+    esp8266_tcp_Connect("ip9.com.cn", 80, TCP);
 
     const esp_tcp_handle_t *pState = esp8266_tcp_getState();
 
@@ -279,17 +280,17 @@ Free:
     printf("remain       : 0x%02X\n", pState->remain);
     printf("=====================================\n");
 
-    esp8266_tcp_Send("Https", 5);
+    esp_http_t req;
+    http_Init(&req, HTTP_METHOD_GET);
+    http_SetHost(&req, "ip9.com.cn");
+    http_SetPath(&req, "/get");
+    //http_AddHeader(&req, "User-Agent: STM32-ESP8266-Client/1.0");
 
-    uint8_t out_ip[18];
+    static char json_buf[256];
+    http_Get(&req, json_buf, sizeof(json_buf));
+    printf("%s\n", json_buf);
 
-    uint8_t out_size = 0;
 
-    esp8266_tcp_DNSResolve("t.weather.sojson.com", out_ip, sizeof(out_ip));
-
-    printf("Out IP:%s", out_ip);
-
-    for( ; ; );
   }
   // 调试部分****************************
   /*    TEST     */
