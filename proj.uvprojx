@@ -504,6 +504,16 @@
               <FileType>5</FileType>
               <FilePath>.\Drivers\BSP\flash_log.h</FilePath>
             </File>
+            <File>
+              <FileName>Config.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\Drivers\BSP\Config.c</FilePath>
+            </File>
+            <File>
+              <FileName>Config.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\Drivers\BSP\Config.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

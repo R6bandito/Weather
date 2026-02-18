@@ -49,11 +49,11 @@
 
 /* ********************************************** */
 #define COMMAND_BUFFER         128
-#define RECV_DATA_BUFFER       1024
+#define RECV_DATA_BUFFER       1368
 #define Tx_DATA_BUFFER         128
 #define RECV_DATA              (0xFF)
 #define NO_DATA                (0xFE)
-#define DATA_QUEUE_LENGTH      8
+#define DATA_QUEUE_LENGTH      4
 
 #define WIFI_IPV4_LENGTH       40
 #define WIFI_PASSWORD_LENGTH   65

@@ -261,7 +261,7 @@ Free:
 
     esp8266_tcp_Init();
 
-    esp8266_tcp_Connect("ip9.com.cn", 80, TCP);
+    esp8266_tcp_Connect("api.weatherbit.io", 80, TCP);
 
     const esp_tcp_handle_t *pState = esp8266_tcp_getState();
 
@@ -282,15 +282,21 @@ Free:
 
     esp_http_t req;
     http_Init(&req, HTTP_METHOD_GET);
-    http_SetHost(&req, "ip9.com.cn");
-    http_SetPath(&req, "/get");
+    http_SetHost(&req, "api.weatherbit.io");
+    http_SetPath(&req, "/v2.0/current?key=97b47c76be1442f39d4f64f9ff07aff9&lat=26.6785&lon=106.6230");
+    //http_SetHost(&req, "ip9.com.cn");
+    //http_SetPath(&req, "/get");
     //http_AddHeader(&req, "User-Agent: STM32-ESP8266-Client/1.0");
 
-    static char json_buf[256];
+    static char json_buf[1024];
+    char out_buf_city[32];
     http_Get(&req, json_buf, sizeof(json_buf));
     printf("%s\n", json_buf);
 
+    http_json_getString(json_buf, country_path, country_path_cnt, out_buf_city, sizeof(out_buf_city));
+    printf("%s\n", out_buf_city);
 
+    for( ; ; );
   }
   // 调试部分****************************
   /*    TEST     */

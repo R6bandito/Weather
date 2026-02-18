@@ -16,7 +16,15 @@ esp_http_err_t http_Get( esp_http_t *__phttp, char *out_json_body, uint16_t out_
 
 bool http_extract_json_body( const char* http_response, char *out_json, uint16_t out_json_size );
 
+esp_http_err_t http_json_getCity( const char *json_body, char *out_city, uint16_t out_city_buf_len );
+
+esp_http_err_t http_json_getString( const char *json_main, const char **key_paths, uint8_t path_cnt, char *out_buf, uint16_t out_size );
+
+esp_http_err_t http_json_getNum( const char *json_main, const char **key_paths, uint8_t path_cnt, double *out_num );
+
 static void safety_strncpy( char *dest, const char *source, size_t length );
+
+static bool json_util_extractQuotes( const char *source, char *out_str, uint16_t buf_len );
 /* ******************************** */
 
 
@@ -27,6 +35,51 @@ extern ESP8266_HandleTypeDef hesp8266;
 
 /* ******************************** */
 
+
+// 跳过空白、逗号、冒号、花括号（安全跳过 JSON 结构符）
+static const char* skip_ws_and_struct(const char *p) {
+  while ( *p && (isspace((unsigned char)*p ) || *p == ',' || *p == ':' || *p == '{' || *p == '[')) {
+      p++;
+  }
+  return p;
+}
+
+
+
+
+static bool json_util_extractQuotes( const char *source, char *out_str, uint16_t buf_len )
+{
+  if ( !source || !out_str || buf_len == 0 )  return false;
+
+  const char *p = source;
+
+  while( *p && *p != '"' )  p++;  // 找到第一个".
+
+  if ( *p != '"' )  return false;
+
+  ++p;
+
+  const char *q = p;
+  uint16_t count = 0;
+ 
+  while( *p )
+  {
+    if ( *p == '"' && ( (p == source + 1) || *(p-1) != '\\') )
+    {
+      // 找到第二个非转义结束的".
+      break;
+    }
+
+    p++;
+    count++;
+  }
+
+  if ( count >= buf_len - 1 ) count = buf_len - 2;
+
+  memcpy(out_str, q, count);
+  out_str[count] = '\0';
+  return true;
+}
 
 
 /**
@@ -614,4 +667,283 @@ bool http_extract_json_body( const char* http_response, char *out_json, uint16_t
   out_json[json_len] = '\0';
 
   return true;
+}
+
+
+
+
+// esp_http_err_t http_json_getCity( const char *json_body, char *out_city, uint16_t out_city_buf_len )
+// {
+//   if ( !json_body || !out_city || out_city_buf_len == 0 )
+//   {
+//     #if defined(__DEBUG_LEVEL_1__)
+//       printf("Wrong param of http_json_getCity.\n");
+//     #endif 
+
+//     LOG_WRITE(LOG_WARNING, "HTTP", "Wrong param of http_json_getCity.");
+//     return ESP_HTTP_ERR_INVALID_ARGS;
+//   } 
+
+//   const char *p_temp = json_body;
+//   const char *key[] = { "\"location\":", "\"city\":", "\"Location\":", "\"City\":", "\"name\":", "\"Name\":", "\"place\":", "\"Place\":"};
+
+//   for ( uint8_t i = 0; i < sizeof(key)/sizeof(key[0]); i++ )
+//   {
+//     p_temp = json_body;
+
+//     p_temp = strstr(json_body, key[i]);
+//     if ( p_temp )
+//     {
+//       if ( strcmp("\"location\":", key[i]) == 0 || strcmp("\"Location\":", key[i]) == 0 )
+//       {
+//         p_temp += strlen(key[i]);
+
+//         // {"results":[{"location":{"name":"北京"}}]} 防止此类情形下提取错误位置.再遍历一遍.
+//         for ( uint8_t j = 0; j < sizeof(key)/sizeof(key[0]); j++ )
+//         {
+//           p_temp = strstr(p_temp, key[j]);
+
+//           if ( p_temp )
+//           {
+//             // 找到真正位置.
+//             p_temp += strlen(key[j]);
+//             goto AHEAD;
+//           }
+//         }
+//         // 二次遍历未找到相关匹配key. 说明 location/Location 后即为位置字符串.往下继续运行即可.
+//         goto AHEAD;
+//       }
+
+//       p_temp += strlen(key[i]);
+// AHEAD:
+//       p_temp = skip_ws_and_struct(p_temp);
+
+//       if ( !p_temp )  continue;
+
+//       if ( json_util_extractQuotes(p_temp, out_city, out_city_buf_len) )
+//       {
+//         // 成功提取出位置字符串.
+//         uint16_t len = strlen(out_city);
+
+//         if ( len == 0 ) break;
+
+//         // 去掉可能的右空格.
+//         while( len > 0 && isspace((unsigned char)out_city[len - 1]) )
+//         {
+//           out_city[--len] = '\0';
+//         }
+
+//         uint16_t left_skip = 0;
+
+//         // 去掉可能的左空格.
+//         while( len > 0 && isspace((unsigned char)out_city[left_skip]) )
+//         {
+//           left_skip++;
+//         }
+
+//         // 内存剪切.
+//         if ( left_skip > 0 )
+//         {
+//           memmove(out_city, out_city + left_skip, len - left_skip + 1 );
+//         }
+
+//         return ESP_HTTP_OK;
+//       }
+//       else 
+//       {
+//         #if defined(__DEBUG_LEVEL_1__)
+//           printf("json_util_extractQuotes called fail in http_json_getCity.\n");
+//         #endif 
+
+//         break;
+//       }
+//     }
+//   }
+
+//   // 整个缓冲区已经遍历完毕. 仍未找到相关key.
+//   #if defined(__DEBUG_LEVEL_1__)
+//     printf("Something error happened in http_json_getCity.\n");
+//   #endif 
+
+//   LOG_WRITE(LOG_ERROR, "HTTP", "Something err happen in http_json_getCity.");
+//   return ESP_HTTP_ERR_UNKNOWN;
+// }
+
+
+
+
+esp_http_err_t http_json_getString( const char *json_main, const char **key_paths, uint8_t path_cnt, char *out_buf, uint16_t out_size )
+{
+  if ( !json_main || !key_paths || path_cnt == 0 || !out_buf || out_size == 0 )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("Wrong param of http_json_getString.\n");
+    #endif     
+
+    LOG_WRITE(LOG_WARNING, "HTTP", "Wrong param of http_json_getString.");
+    return ESP_HTTP_ERR_INVALID_ARGS;
+  } 
+
+  const char *p = json_main;
+  uint16_t count = 0;
+
+  for ( uint8_t j = 0; j < path_cnt; j++ )
+  {
+    if ( key_paths[j] == NULL )   continue;
+
+    p = strstr(json_main, key_paths[j]);
+    const char *q = p; 
+    count = 0;
+
+    if ( p && p > json_main )
+    {
+      // 判断是否是字段名.若是字段名则进行提取后面紧跟的一个"的字段.
+      if ( *(p - 1) == '"' && *( p + strlen(key_paths[j]) ) == '"' && *( p + strlen(key_paths[j]) + 1 ) == ':' )
+      {
+        p += strlen(key_paths[j]) + 1;
+
+        p = skip_ws_and_struct(p);
+
+        if ( *p != '"' )  continue;    // 查找到的字段值并非string类型. 
+
+        p++;    // 跳过第一个".
+        q = p;
+        while( *p != '"' )
+        {
+          count++;
+          p++;
+          if ( count > out_size - 2 )   break;  // 缓冲区不够. 退回.
+        }
+
+        memcpy(out_buf, q, count);
+        out_buf[count] = '\0';
+
+        // 去掉字段值中可能带有的右空格.
+        while( count > 0 && isspace((unsigned char)out_buf[count - 1]) )
+        {
+          out_buf[--count] = '\0';
+        }
+
+        // 去掉字段值中可能带有的左空格.
+        uint16_t left_skip = 0;
+        while( count > 0 && isspace((unsigned char)out_buf[left_skip]) )
+        {
+          left_skip++;
+        }
+
+        if ( left_skip > 0 )
+        {
+          memmove(out_buf, out_buf + left_skip, count - left_skip + 1 );
+        }
+
+        return ESP_HTTP_OK;
+      }
+      else 
+      {
+        // 不是字段名. 继续匹配其它key.
+        continue;
+      }
+    }
+    else continue;
+  }
+
+  // 整个缓冲区已经遍历完毕. 仍未找到相关key.
+  #if defined(__DEBUG_LEVEL_1__)
+    printf("Key not found in http_json_getString.\n");
+  #endif   
+
+  LOG_WRITE(LOG_ERROR, "HTTP", "Key not found in http_json_getString.");
+  return ESP_HTTP_ERR_UNKNOWN;
+}
+
+
+
+
+esp_http_err_t http_json_getNum( const char *json_main, const char **key_paths, uint8_t path_cnt, double *out_num )
+{
+  if ( !json_main || !key_paths || path_cnt == 0 || !out_num )
+  {
+    #if defined(__DEBUG_LEVEL_1__)
+      printf("Wrong param of http_json_getNum.\n");
+    #endif       
+
+    LOG_WRITE(LOG_WARNING, "HTTP", "Wrong param of http_json_getNum.");
+    return ESP_HTTP_ERR_INVALID_ARGS;
+  } 
+
+  const char *p = json_main;
+  const char *q = p;
+  uint16_t count = 0;
+  char temp[64];
+
+  for ( uint8_t j = 0; j < path_cnt; j++ )
+  {
+    if ( key_paths[j] == NULL )  continue;
+
+    count = 0;
+
+    p = strstr(json_main, key_paths[j]);
+
+    if ( !p )  continue;
+
+    if ( p && p > json_main )
+    {
+      // 判断是否为字段名.
+      if ( *(p - 1) == '"' && *( p + strlen(key_paths[j]) - 1 ) == '"' && *(p + strlen(key_paths[j])) == ':' )
+      {
+        p += strlen(key_paths[j]);
+
+        p = skip_ws_and_struct(p);
+
+        // 先将数据存入到字符串中，再从字符串中转化为浮点数.
+        q = p;
+        while( *p != ',' && *p != '}' && *p != ']' && *p != '\0' )
+        {
+          if ( isdigit((unsigned char)*p) || *p == '.' || *p == 'e' || *p == ' ' || *p == 'E' || (*p == '+' && p == q) || (*p == '-' && p == q) )
+          {
+            temp[count++] = *p++;
+          }
+          else  break;
+
+          if ( count > sizeof(temp) - 2 ); break;
+        }
+        temp[count] = '\0';
+        if ( count == 0 ) continue;
+
+        // 去掉字段值中可能带有的右空格.
+        while( count > 0 && isspace((unsigned char)temp[count - 1]) )
+        {
+          temp[--count] = '\0';
+        }
+
+        // 去掉字段值中可能带有的左空格.
+        uint16_t left_skip = 0;
+        while( count > 0 && isspace((unsigned char)temp[left_skip]) )
+        {
+          left_skip++;
+        }
+
+        if ( left_skip > 0 )
+        {
+          memmove(temp, temp + left_skip, count - left_skip + 1 );
+        }        
+
+        char *endptr;
+        double val = strtod(temp, &endptr);
+        if ( *endptr != '\0' || endptr == temp )  continue; // 转换失败.
+
+        *out_num = val;
+
+        return ESP_HTTP_OK;
+      }
+    }
+  }
+
+  // 整个缓冲区已经遍历完毕. 仍未找到相关key.
+  #if defined(__DEBUG_LEVEL_1__)
+    printf("Key not found in http_json_getNum.\n");
+  #endif     
+
+  LOG_WRITE(LOG_ERROR, "HTTP", "Key not found in http_json_getNum.");
+  return ESP_HTTP_ERR_UNKNOWN;
 }

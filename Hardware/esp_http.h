@@ -2,12 +2,14 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include "esp8266_tcp.h"
+#include "Config.h"
 
 #define HTTP_HOST_MAX_LEN           ( 64U )
 #define HTTP_PATH__MEX_LEN          ( 256U )
 #define HTTP_EXTRA_HEAD_MAX_LEN     ( 128U )
-#define HTTP_REQ_BUF_MAX_LEN        ( 512U )
+#define HTTP_REQ_BUF_MAX_LEN        ( 256U )
 
 #define HTTP_METHOD_GET             ( 0U )
 #define HTTP_METHOD_POST            ( 1U )
@@ -24,7 +26,8 @@ typedef enum
   ESP_HTTP_ERR_OFFLINE        = -4,
   ESP_HTTP_ERR_BUILD_REQ      = -5,
   ESP_HTTP_ERR_SEND_WAIT_FAIL = -6,
-  ESP_HTTP_ERR_EXTRACT        = -7
+  ESP_HTTP_ERR_EXTRACT        = -7,
+  ESP_HTTP_ERR_UNKNOWN        = -8
 } esp_http_err_t;
 
 
@@ -54,6 +57,12 @@ esp_http_err_t http_RequestBuild( esp_http_t *__phttp, char *out_buf, uint16_t o
 esp_http_err_t http_Get( esp_http_t *__phttp, char *out_json_body, uint16_t out_json_body_buf_size );
 
 bool http_extract_json_body( const char* http_response, char *out_json, uint16_t out_json_size );
+
+esp_http_err_t http_json_getString( const char *json_main, const char **key_paths, uint8_t path_cnt, char *out_buf, uint16_t out_size );
+
+esp_http_err_t http_json_getNum( const char *json_main, const char **key_paths, uint8_t path_cnt, double *out_num );
+
+//esp_http_err_t http_json_getCity( const char *json_body, char *out_city, uint16_t out_city_buf_len );
 
 #endif // __ESP_HTTP_H
 
